@@ -69,7 +69,7 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
 
     // Просить фокус раньше, чем дерево живо, бесполезно: элемент вне
     // визуального дерева тихо отказывает.
-    root_.value().loaded([this](Object const&, RoutedEventArgs&) {
+    root_.value().add_onLoaded([this](Object const&, RoutedEventArgs&) {
         root_.value().focus(FocusState::Programmatic);
     });
 }

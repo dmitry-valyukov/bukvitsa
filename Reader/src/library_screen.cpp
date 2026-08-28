@@ -78,8 +78,8 @@ LibraryScreen::LibraryScreen() {
             onContinueAtStartChanged(continueBox_.value().isChecked().value_or(false));
         }
     };
-    continueBox_.value().checked(told);
-    continueBox_.value().unchecked(told);
+    continueBox_.value().add_onChecked(told);
+    continueBox_.value().add_onUnchecked(told);
 
     root_ = Grid{
         isTabStop = true,
@@ -125,7 +125,7 @@ LibraryScreen::LibraryScreen() {
         },
     };
 
-    root_.value().loaded([this](Object const&, RoutedEventArgs&) {
+    root_.value().add_onLoaded([this](Object const&, RoutedEventArgs&) {
         root_.value().focus(FocusState::Programmatic);
     });
 }

@@ -194,7 +194,7 @@ UIElement ReaderPanel::buildSearch() {
 
     // Поиск по Enter, а не по каждой букве: искать по одной букве в романе —
     // это тысячи находок, из которых читателю не нужна ни одна.
-    searchBox_.value().keyDown([this](Object const&, KeyRoutedEventArgs& args) {
+    searchBox_.value().add_onKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
         if (args.key() != VirtualKey::Enter) return;
         runSearch();
         args.handled(true);
@@ -307,17 +307,17 @@ UIElement ReaderPanel::buildSettings() {
     lineHeight_ = slider(100, 240, 5);
     margin_ = slider(50, 1000, 25);
 
-    fontSize_.value().valueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
+    fontSize_.value().add_onValueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
         if (filling_) return;
         view_.setFontSize(static_cast<float>(args.newValue()));
         if (onSettingsChanged) onSettingsChanged();
     });
-    lineHeight_.value().valueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
+    lineHeight_.value().add_onValueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
         if (filling_) return;
         view_.setLineHeight(static_cast<float>(args.newValue()) / 100.0f);
         if (onSettingsChanged) onSettingsChanged();
     });
-    margin_.value().valueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
+    margin_.value().add_onValueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
         if (filling_) return;
         view_.setMargin(static_cast<float>(args.newValue()) / 100.0f);
         if (onSettingsChanged) onSettingsChanged();
@@ -398,7 +398,7 @@ void ReaderPanel::close() {
                          compositor_.createLinearEasingFunction());
     visual_.value().startAnimation(L"Translation", slide);
 
-    batch.completed([this](Object const&, CompositionBatchCompletedEventArgs&) {
+    batch.add_onCompleted([this](Object const&, CompositionBatchCompletedEventArgs&) {
         if (!open_) root_.value().visibility(Visibility::Collapsed);
     });
     batch.end();

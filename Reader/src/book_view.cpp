@@ -336,19 +336,19 @@ Grid BookView::buildTree() {
         note_.root(),
     };
 
-    tree.loaded([this](Object const&, RoutedEventArgs&) {
+    tree.add_onLoaded([this](Object const&, RoutedEventArgs&) {
         root_.value().focus(FocusState::Programmatic);
         if (resizeSurface()) relayoutNow();
     });
 
-    tree.sizeChanged([this](Object const&, SizeChangedEventArgs&) {
+    tree.add_onSizeChanged([this](Object const&, SizeChangedEventArgs&) {
         // Единственное место, где нужен гистерезис: окно тянут мышью, граница
         // меры проходит под курсором, и без него колонки защёлкают. Знака
         // хватает — дрожь бывает в доли знака, а не в четыре.
         if (resizeSurface()) requestRelayout(true);
     });
 
-    tree.previewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
+    tree.add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
         switch (args.key()) {
             case VirtualKey::PageDown:
             case VirtualKey::Right:
@@ -391,7 +391,7 @@ Grid BookView::buildTree() {
         args.handled(true);
     });
 
-    tree.pointerWheelChanged([this](Object const&, PointerRoutedEventArgs& args) {
+    tree.add_onPointerWheelChanged([this](Object const&, PointerRoutedEventArgs& args) {
         const int delta = args.getCurrentPoint(root_.value()).properties().mouseWheelDelta();
         const bool control = (static_cast<uint32_t>(args.keyModifiers()) &
                               static_cast<uint32_t>(VirtualKeyModifiers::Control)) != 0;
@@ -404,7 +404,7 @@ Grid BookView::buildTree() {
         args.handled(true);
     });
 
-    tree.pointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
+    tree.add_onPointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
         const PointerPoint touch = args.getCurrentPoint(root_.value());
         const Point point = touch.position();
         root_.value().focus(FocusState::Programmatic);
@@ -1426,7 +1426,7 @@ void BookView::animateSpreadTurn(bool forward) {
     bend_.value().startAnimation(L"Offset", curve);
     bend_.value().startAnimation(L"Opacity", settle);
 
-    batch.completed([this, alive = std::weak_ptr<int>(alive_), epoch](
+    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), epoch](
                         Object const&, CompositionBatchCompletedEventArgs&) {
         // Полосы может уже не быть: книгу закрывают и посреди переворота, а
         // пакет о конце сообщает после него.

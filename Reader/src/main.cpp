@@ -114,7 +114,7 @@ wxl::Teardown wxl_launched() {
         saveBookState(settings->lastBookGuid, *state);
     };
 
-    positionTimer.tick([positionTimer, rememberPosition](Object const&, Object const&) {
+    positionTimer.add_onTick([positionTimer, rememberPosition](Object const&, Object const&) {
         positionTimer.stop();
         rememberPosition();
     });
@@ -290,7 +290,7 @@ wxl::Teardown wxl_launched() {
 
     auto const installKeys = [setFullScreen, isFullScreen, shown, bookCameFrom, showStartScreen,
                               showLibrary, panel, view](UIElement const& element) {
-        element.previewKeyDown([=](Object const&, KeyRoutedEventArgs& args) {
+        element.add_onPreviewKeyDown([=](Object const&, KeyRoutedEventArgs& args) {
             if (args.handled()) return;   // полоса набора своё уже разобрала
 
             // Панель — только над книгой: над заставкой ей нечего показывать.
@@ -418,19 +418,19 @@ wxl::Teardown wxl_launched() {
         saveSettings(*settings);
     };
 
-    saveTimer.tick([saveTimer, rememberWindow](Object const&, Object const&) {
+    saveTimer.add_onTick([saveTimer, rememberWindow](Object const&, Object const&) {
         saveTimer.stop();
         rememberWindow();
     });
 
     // AppWindow.Changed дёргается и на перемещение, и на изменение размера, и
     // на смену presenter'а — то есть на всё, что мы запоминаем.
-    appWindow.changed([saveTimer](Object const&, AppWindowChangedEventArgs&) {
+    appWindow.add_onChanged([saveTimer](Object const&, AppWindowChangedEventArgs&) {
         saveTimer.stop();   // каждое движение отодвигает запись
         saveTimer.start();
     });
 
-    window.closed([saveTimer, positionTimer, rememberWindow, rememberPosition](Object const&,
+    window.add_onClosed([saveTimer, positionTimer, rememberWindow, rememberPosition](Object const&,
                                                                               WindowEventArgs&) {
         saveTimer.stop();
         positionTimer.stop();
@@ -443,7 +443,7 @@ wxl::Teardown wxl_launched() {
     auto splashTimer = window.dispatcherQueue().createTimer();
     splashTimer.interval(kSplashHold);
     splashTimer.isRepeating(false);
-    splashTimer.tick([screen, splashTimer](Object const&, Object const&) {
+    splashTimer.add_onTick([screen, splashTimer](Object const&, Object const&) {
         splashTimer.stop();
         screen->reveal();
     });
