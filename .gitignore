@@ -1,0 +1,22 @@
+# Build
+build/
+out/
+x64/
+x86/
+[Dd]ebug/
+[Rr]elease/
+CMakeUserPresets.json
+
+# Visual Studio
+.vs/
+*.user
+*.vcxproj.filters.bak
+*.VC.db
+*.VC.opendb
+ipch/
+
+# Misc
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini

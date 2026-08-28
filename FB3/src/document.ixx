@@ -1,0 +1,86 @@
+// Document — книга FB3, открытая на чтение: метаданные, дерево тела,
+// картинки и сноски.
+//
+// Document владеет всем, на что смотрит модель: пакетом, буферами разобранных
+// частей и ареной узлов. Тексты узлов — виды в эти буферы, поэтому книга
+// не копируется ни разу от файла до вёрстки, а правило владения ровно одно:
+// узлы живут столько же, сколько Document.
+//
+// Поэтому же Document неперемещаем: виды указывают внутрь его буферов.
+// Открывают книгу конструктором и держат там, где она нужна (обычно в модели
+// приложения), а передают по ссылке.
+//
+// Требование к среде: wxl.xml выделяет память из STA-пула wxl.core, который
+// должен существовать до первого разбора и пережить последнюю книгу.
+// Создаётся один раз в main().
+
+export module bukvitsa.fb3:document;
+
+import std;
+import wxl.text;
+
+import :description;
+import :node;
+
+export namespace bukvitsa::fb3 {
+
+/// Картинка книги: байты как они лежали в пакете (jpeg/png/gif/svg).
+/// Декодирование — дело того, кто рисует; модель хранит источник.
+struct ImagePart {
+    // TODO: обсудить!
+    wxl::text::u8_text relationshipId;
+    // TODO: enum
+    wxl::text::u8_text contentType;
+
+    // TODO: - байты надо доставать лениво только для декодирования
+    // не надо их хранить
+    std::string bytes;
+};
+
+class Document {
+public:
+    /// Открывает и разбирает книгу целиком: пакет, метаданные, тело.
+    ///
+    /// Целиком — потому что тело даже большого романа это единицы мегабайт
+    /// XML, а разбор их занимает миллисекунды; ленивость здесь усложнила бы
+    /// модель, ничего не выиграв. Картинки — другое дело, они читаются
+    /// по требованию (см. image()).
+    ///
+    /// @throw std::runtime_error, если это не FB3 или он повреждён.
+    explicit Document(const std::filesystem::path& path);
+    ~Document();
+
+    Document(const Document&) = delete;
+    Document& operator=(const Document&) = delete;
+
+    const Description& description() const;
+
+    /// Корень тела книги (NodeKind::Body). Его дети — секции верхнего уровня.
+    const Node& body() const;
+
+    /// Сноска по идентификатору из NoteRefData::targetId.
+    /// Обычно не нужна: ссылки разрешены при загрузке, и у NoteRefData уже
+    /// стоит target.
+    const Node* noteBody(std::string_view id) const;
+
+    /// Полный размер книги в символах — знаменатель прогресса чтения.
+    std::uint32_t characterCount() const;
+
+    /// Картинки в порядке связей тела. Байты читаются при первом обращении:
+    /// книга с иллюстрациями не должна тащить их в память ради оглавления.
+    std::span<const ImagePart> images() const;
+    const ImagePart* image(std::uint32_t index) const;
+
+    /// Узел, внутри которого лежит символ с такой позицией — обратная сторона
+    /// Node::charOffset(). Так восстанавливается место чтения после смены
+    /// кегля или размера окна.
+    const Node* nodeAtCharOffset(std::uint32_t offset) const;
+
+private:
+    friend class DocumentBuilder; ///< он собирает дерево прямо в Impl
+
+    struct Impl;                  ///< пакет, разборщики XML, арена узлов
+    std::unique_ptr<Impl> impl_;
+};
+
+}  // namespace bukvitsa::fb3
