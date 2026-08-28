@@ -9,7 +9,7 @@
 #
 # Использование:
 #   tools\drive.ps1 -Do "wait 1500; shot start.png"
-#   tools\drive.ps1 -Exe build\x64\Abajour\Debug\Abajour.exe `
+#   tools\drive.ps1 -Exe build\x64\Reader\Debug\Reader.exe `
 #                   -Arguments "FB3\testdata\nightmare_example.fb3" `
 #
 # Команды (-Do — одна строка, команды через ';'):

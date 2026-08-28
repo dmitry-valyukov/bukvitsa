@@ -2,7 +2,7 @@
 <!-- Неупакованному процессу WinUI 3 нужно сказать о себе ровно это: против
      какой Windows он проверен и что масштаб он держит сам. Без первого
      платформа не считает процесс современным; без второго окно растягивается
-     битмапом на экране с масштабом — то самое, чем Abajour до сих пор болен. -->
+     битмапом на экране с масштабом. -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
   <assemblyIdentity version="0.1.0.0" name="Bukvitsa.Reader"/>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
