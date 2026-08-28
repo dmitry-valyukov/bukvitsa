@@ -83,6 +83,14 @@ bool holdsInlineContent(NodeKind kind) {
 struct Document::Impl {
     explicit Impl(const std::filesystem::path& path) : package(path) {}
 
+    /// Байты книги переезжают сюда и живут дольше пакета: он читает части по
+    /// требованию и смотрит в них до самого конца.
+    explicit Impl(std::string&& fileBytes)
+        : bytes(std::move(fileBytes)),
+          package(std::span(reinterpret_cast<const std::byte*>(bytes.data()), bytes.size())) {}
+
+    std::string bytes;
+
     OpcPackage package;
     PackagePart descriptionPart;
     PackagePart bodyPart;
@@ -342,6 +350,14 @@ private:
 /* ------------------------------------------------------------------ */
 
 Document::Document(const std::filesystem::path& path) : impl_(std::make_unique<Impl>(path)) {
+    parse();
+}
+
+Document::Document(std::string fileBytes) : impl_(std::make_unique<Impl>(std::move(fileBytes))) {
+    parse();
+}
+
+void Document::parse() {
     // 1. Точка входа пакета: связь Book ведёт к метаданным, от них связь
     //    body — к тексту. Пути не угадываются нигде.
     auto description = impl_->package.partByPackageRelationship(kRelBook);

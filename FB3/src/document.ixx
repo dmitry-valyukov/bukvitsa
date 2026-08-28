@@ -48,6 +48,16 @@ public:
     ///
     /// @throw std::runtime_error, если это не FB3 или он повреждён.
     explicit Document(const std::filesystem::path& path);
+
+    /// Та же книга из уже прочитанных байтов файла.
+    ///
+    /// Ради этого конструктора всё и затевалось: файл читает рабочий поток,
+    /// а разбирает интерфейсный, потому что разбор берёт память из STA-пула.
+    /// Байты переезжают в документ и живут столько же, сколько он: пакет OPC
+    /// читает свои части по требованию.
+    ///
+    /// @throw std::runtime_error, если это не FB3 или он повреждён.
+    explicit Document(std::string fileBytes);
     ~Document();
 
     Document(const Document&) = delete;
@@ -78,6 +88,9 @@ public:
 
 private:
     friend class DocumentBuilder; ///< он собирает дерево прямо в Impl
+
+    /// Общее тело обоих конструкторов: пакет уже открыт, дальше -- разбор.
+    void parse();
 
     struct Impl;                  ///< пакет, разборщики XML, арена узлов
     std::unique_ptr<Impl> impl_;

@@ -24,18 +24,20 @@ std::filesystem::path dataDirectory() {
     return path / L"Bukvitsa" / L"Reader";
 }
 
-Settings loadSettings() {
+std::filesystem::path settingsPath() {
+    const std::filesystem::path directory = dataDirectory();
+
+    return directory.empty() ? std::filesystem::path{} : directory / L"settings.xml";
+}
+
+Settings parseSettings(std::string xml) {
     Settings settings;
 
-    const std::filesystem::path path = dataDirectory() / L"settings.xml";
-    std::error_code ignored;
-    if (path.empty() || !std::filesystem::exists(path, ignored)) {
-        return settings;   // первый запуск
-    }
+    if (xml.empty()) return settings;   // первого запуска ещё не было
 
     try {
         wxl::xml::document document;
-        const wxl::xml::node& root = document.load_file(path);
+        const wxl::xml::node& root = document.load(std::move(xml));
 
         if (const wxl::xml::node* window = root.child("window")) {
             settings.windowPlacement = attributeOf(*window, "placement");
@@ -75,7 +77,7 @@ Settings loadSettings() {
     return settings;
 }
 
-bool saveSettings(const Settings& settings) {
+std::string settingsXml(const Settings& settings) {
     // text_builder, а не поток с нейтральной локалью: локали у него нет вовсе,
     // и дробное число пишется точкой, какие бы настройки ни стояли в Windows.
     wxl::text::text_builder<> out;
@@ -94,9 +96,7 @@ bool saveSettings(const Settings& settings) {
 
     out.append("</settings>\n");
 
-    const std::filesystem::path directory = dataDirectory();
-    if (directory.empty()) return false;
-    return writeFile(directory / L"settings.xml", out.view());
+    return std::string(out.view());
 }
 
 }  // namespace bukvitsa::reader

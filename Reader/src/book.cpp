@@ -23,8 +23,8 @@ IDWriteFactory* dwriteFactory() {
     return factory;
 }
 
-Book::Book(const std::filesystem::path& path, IDWriteFactory* dwrite)
-    : path_(path), document_(path), engine_(dwrite) {
+Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFactory* dwrite)
+    : path_(path), document_(std::move(fileBytes)), engine_(dwrite) {
     decodeImages();
 
     // Пагинатор спрашивает размеры картинок у нас: вёрстка не декодирует

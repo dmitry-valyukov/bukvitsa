@@ -44,6 +44,131 @@ private:
     BSTR value_ = nullptr;
 };
 
+/// Файл книги, уже прочитанный кем-то другим, — как поток для Packaging API.
+///
+/// Нужен потому, что читать файл здесь нельзя: чтение с диска в этой читалке
+/// живёт на рабочем потоке и приезжает сюда байтами, а разбор идёт в
+/// интерфейсном. `CreateStreamOnFile` открыл бы файл сам и прочитал бы его
+/// синхронно — то есть ровно то, чего мы избегаем.
+///
+/// Только чтение и только то, что спрашивает `ReadPackageFromStream`: `Read`,
+/// `Seek` и размер из `Stat`. Всё остальное честно отвечает `E_NOTIMPL` —
+/// поток, который делает вид, что умеет писать, хуже того, который не умеет.
+///
+/// Байтами он не владеет: они принадлежат книге и живут дольше пакета,
+/// потому что пакет читает части по требованию (`OPC_CACHE_ON_ACCESS`).
+class MemoryStream final : public IStream {
+public:
+    explicit MemoryStream(std::span<const std::byte> bytes) noexcept : bytes_(bytes) {}
+
+    // ---- IUnknown ----
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+
+        if (iid == __uuidof(IUnknown) || iid == __uuidof(ISequentialStream) ||
+            iid == __uuidof(IStream)) {
+            *out = static_cast<IStream*>(this);
+            AddRef();
+            return S_OK;
+        }
+
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG left = --references_;
+        if (left == 0) delete this;
+        return left;
+    }
+
+    // ---- ISequentialStream ----
+
+    HRESULT STDMETHODCALLTYPE Read(void* into, ULONG wanted, ULONG* got) override {
+        const std::size_t left = bytes_.size() - position_;
+        const ULONG taken = static_cast<ULONG>(std::min<std::size_t>(wanted, left));
+
+        if (taken != 0) std::memcpy(into, bytes_.data() + position_, taken);
+
+        position_ += taken;
+
+        if (got) *got = taken;
+
+        return taken == wanted ? S_OK : S_FALSE;
+    }
+
+    HRESULT STDMETHODCALLTYPE Write(const void*, ULONG, ULONG*) override { return STG_E_ACCESSDENIED; }
+
+    // ---- IStream ----
+
+    HRESULT STDMETHODCALLTYPE Seek(LARGE_INTEGER move, DWORD from, ULARGE_INTEGER* out) override {
+        std::int64_t base = 0;
+
+        switch (from) {
+            case STREAM_SEEK_SET: base = 0; break;
+            case STREAM_SEEK_CUR: base = static_cast<std::int64_t>(position_); break;
+            case STREAM_SEEK_END: base = static_cast<std::int64_t>(bytes_.size()); break;
+            default: return STG_E_INVALIDFUNCTION;
+        }
+
+        const std::int64_t wanted = base + move.QuadPart;
+
+        // Позади начала — ошибка; за концом — законно и означает пустое
+        // чтение, как у всякого потока.
+        if (wanted < 0) return STG_E_INVALIDFUNCTION;
+
+        position_ = static_cast<std::size_t>(
+            std::min<std::int64_t>(wanted, static_cast<std::int64_t>(bytes_.size())));
+
+        if (out) out->QuadPart = position_;
+
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE Stat(STATSTG* out, DWORD flags) override {
+        if (!out) return E_POINTER;
+
+        *out = STATSTG{};
+        out->type = STGTY_STREAM;
+        out->cbSize.QuadPart = bytes_.size();
+
+        if (flags != STATFLAG_NONAME) out->pwcsName = nullptr;
+
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetSize(ULARGE_INTEGER) override { return STG_E_ACCESSDENIED; }
+    HRESULT STDMETHODCALLTYPE CopyTo(IStream*, ULARGE_INTEGER, ULARGE_INTEGER*,
+                                     ULARGE_INTEGER*) override {
+        return E_NOTIMPL;
+    }
+    HRESULT STDMETHODCALLTYPE Commit(DWORD) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE Revert() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE LockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override {
+        return STG_E_INVALIDFUNCTION;
+    }
+    HRESULT STDMETHODCALLTYPE UnlockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override {
+        return STG_E_INVALIDFUNCTION;
+    }
+    HRESULT STDMETHODCALLTYPE Clone(IStream** out) override {
+        if (!out) return E_POINTER;
+
+        MemoryStream* copy = new MemoryStream(bytes_);
+        copy->position_ = position_;
+
+        *out = copy;
+        return S_OK;
+    }
+
+private:
+    std::span<const std::byte> bytes_;
+    std::size_t position_ = 0;
+    ULONG references_ = 1;
+};
+
 /// Простой владеющий указатель на COM-интерфейс. Своего хватает: тащить сюда
 /// C++/WinRT ради одного шаблона незачем, а FB3 не должен зависеть от WinRT.
 template <typename T>
@@ -163,7 +288,28 @@ OpcPackage::OpcPackage(const std::filesystem::path& path) : impl_(new Impl) {
     check(impl_->factory->CreateStreamOnFile(path.c_str(), OPC_STREAM_IO_READ, nullptr, 0, stream.put()),
           "OPC: файл не открывается");
 
-    check(impl_->factory->ReadPackageFromStream(stream.get(), OPC_CACHE_ON_ACCESS, impl_->package.put()),
+    check(impl_->factory->ReadPackageFromStream(stream.get(), OPC_CACHE_ON_ACCESS,
+                                                impl_->package.put()),
+          "OPC: это не пакет OPC");
+
+    check(impl_->package->GetPartSet(impl_->parts.put()), "OPC: у пакета нет частей");
+}
+
+OpcPackage::OpcPackage(std::span<const std::byte> bytes) : impl_(new Impl) {
+    ensureComInitialized();
+
+    check(CoCreateInstance(__uuidof(OpcFactory), nullptr, CLSCTX_INPROC_SERVER,
+                           __uuidof(IOpcFactory), impl_->factory.putVoid()),
+          "CoCreateInstance(OpcFactory)");
+
+    // Считаем от единицы, и первым владельцем становится ComPtr: дальше
+    // пакет добавит свою ссылку и будет держать поток столько, сколько
+    // читает части.
+    ComPtr<IStream> stream;
+    *stream.put() = new MemoryStream(bytes);
+
+    check(impl_->factory->ReadPackageFromStream(stream.get(), OPC_CACHE_ON_ACCESS,
+                                                impl_->package.put()),
           "OPC: это не пакет OPC");
 
     check(impl_->package->GetPartSet(impl_->parts.put()), "OPC: у пакета нет частей");

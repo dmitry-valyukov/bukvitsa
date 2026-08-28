@@ -16,6 +16,7 @@ add_executable(Reader WIN32
     src/reader_panel.cpp
     src/note_popup.cpp
     src/book_index.cpp
+    src/io.cpp
     src/library.cpp
     src/settings.cpp
     src/store.cpp
@@ -23,6 +24,7 @@ add_executable(Reader WIN32
     src/book.h
     src/book_view.h
     src/file_dialog.h
+    src/io.h
     src/library.h
     src/library_screen.h
     src/reader_panel.h
@@ -41,6 +43,7 @@ add_executable(Reader WIN32
 # разложила. windowscodecs -- декодирование картинок книги (WIC).
 target_link_libraries(Reader PRIVATE
     wxl::winui
+    wxl::async
     wxl::xml
     wxl::text
     bukvitsa::typography

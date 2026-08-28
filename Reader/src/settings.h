@@ -12,6 +12,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace bukvitsa::reader {
 
@@ -54,14 +55,21 @@ struct Settings {
 /// другую машину битые ссылки и лишние мегабайты.
 std::filesystem::path dataDirectory();
 
-/// Читает settings.xml. Файла нет, он битый или от будущей версии — вернутся
-/// значения по умолчанию: настройки не то, ради чего стоит не запуститься.
-Settings loadSettings();
+/// Путь к settings.xml.
+std::filesystem::path settingsPath();
 
-/// Пишет settings.xml через временный файл с заменой.
+/// Разбирает settings.xml. Пусто, битое или от будущей версии — вернутся
+/// значения по умолчанию: настройки не то, ради чего стоит не запуститься.
+///
+/// Разбор, а не чтение: байты приносит `Io::readFile`, потому что читать их
+/// в интерфейсном потоке нельзя, а разбирать -- только в нём (память разбора
+/// из STA-пула).
+Settings parseSettings(std::string xml);
+
+/// Текст settings.xml -- то, что уходит в `Io::writeFile`.
 ///
 /// Атомарность здесь не педантизм: файл переписывается при каждом закрытии
 /// окна, и падение посреди записи стоило бы читателю всего, что в нём есть.
-bool saveSettings(const Settings& settings);
+std::string settingsXml(const Settings& settings);
 
 }  // namespace bukvitsa::reader

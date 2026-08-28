@@ -1,10 +1,11 @@
 #include "library.h"
 
 #include <windows.h>
+#include <objbase.h>
 
 
 
-#include "book.h"
+// «book.h» больше не нужен: реестр работает с разобранным документом.
 #include "settings.h"
 #include "store.h"
 
@@ -16,10 +17,6 @@ import wxl.xml;
 namespace bukvitsa::reader {
 namespace {
 
-std::filesystem::path libraryPath() {
-    return dataDirectory() / L"library.xml";
-}
-
 /// Расширение по типу содержимого части. Пустое значит «показать это нечем»:
 /// обложку читает XAML, а он знает те же форматы, что и WIC.
 std::wstring_view coverExtension(std::string_view contentType) {
@@ -30,13 +27,6 @@ std::wstring_view coverExtension(std::string_view contentType) {
     return {};
 }
 
-std::filesystem::path statePath(std::wstring_view guid) {
-    // Имя файла — guid и ничего больше: он наш, выдан CoCreateGuid, и в нём
-    // не может оказаться ни разделителя пути, ни двоеточия. Названия книги
-    // здесь нет намеренно — из него имя файла пришлось бы вычищать.
-    return dataDirectory() / L"books" / (std::wstring{guid} + L".xml");
-}
-
 /// Один атрибут: имя, значение, экранирование. Отдельной функцией, потому что
 /// в реестре их семь на запись, и повторять xmlValue() семь раз — значит однажды
 /// забыть.
@@ -44,11 +34,22 @@ void attribute(wxl::text::text_builder<>& out, std::string_view name, std::wstri
     out.format(" {}=\"{}\"", name, xmlValue(value));
 }
 
-/// Определены ниже, рядом с тем, что делают, — а нужны уже в add().
-BookEntry describe(const Book& book);
-std::wstring cacheCover(const Book& book, std::wstring_view guid);
+/// Определена ниже, рядом с тем, что делает, — а нужна уже в add().
+BookEntry describe(const fb3::Document& document, const std::filesystem::path& path,
+                   std::uint64_t fileSize);
 
 }  // namespace
+
+std::filesystem::path libraryPath() {
+    return dataDirectory() / L"library.xml";
+}
+
+std::filesystem::path statePath(std::wstring_view guid) {
+    // Имя файла — guid и ничего больше: он наш, выдан CoCreateGuid, и в нём
+    // не может оказаться ни разделителя пути, ни двоеточия. Названия книги
+    // здесь нет намеренно — из него имя файла пришлось бы вычищать.
+    return dataDirectory() / L"books" / (std::wstring{guid} + L".xml");
+}
 
 std::wstring newGuid() {
     GUID guid{};
@@ -59,16 +60,14 @@ std::wstring newGuid() {
     return text;
 }
 
-void Library::load() {
+void Library::loadFrom(std::string xml) {
     books_.clear();
 
-    const std::filesystem::path path = libraryPath();
-    std::error_code ignored;
-    if (path.empty() || !std::filesystem::exists(path, ignored)) return;
+    if (xml.empty()) return;
 
     try {
         wxl::xml::document document;
-        const wxl::xml::node& root = document.load_file(path);
+        const wxl::xml::node& root = document.load(std::move(xml));
 
         for (const wxl::xml::node& element : root.children_named("book")) {
             BookEntry entry;
@@ -94,7 +93,7 @@ void Library::load() {
     }
 }
 
-bool Library::save() const {
+std::string Library::toXml() const {
     wxl::text::text_builder<> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
@@ -112,7 +111,8 @@ bool Library::save() const {
     }
 
     out.append("</library>\n");
-    return writeFile(libraryPath(), out.view());
+
+    return std::string(out.view());
 }
 
 const BookEntry* Library::find(std::wstring_view guid) const {
@@ -142,67 +142,70 @@ const BookEntry* Library::findSame(const BookEntry& candidate) const {
     return nullptr;
 }
 
-const BookEntry& Library::add(const Book& book) {
-    BookEntry entry = describe(book);
+const BookEntry& Library::add(const fb3::Document& document, const std::filesystem::path& path,
+                              std::uint64_t fileSize) {
+    BookEntry entry = describe(document, path, fileSize);
 
     if (const BookEntry* known = findSame(entry)) {
         // Guid остаётся прежним: за ним место чтения, и книга, которую
         // переложили в другую папку, должна открыться там же, где закрылась.
         BookEntry& stored = books_[static_cast<std::size_t>(known - books_.data())];
         entry.guid = stored.guid;
-        entry.cover = cacheCover(book, entry.guid);
+        entry.cover = coverOf(document, entry.guid).name;
         stored = std::move(entry);
         return stored;
     }
 
     entry.guid = newGuid();
-    entry.cover = cacheCover(book, entry.guid);
+    entry.cover = coverOf(document, entry.guid).name;
     books_.push_back(std::move(entry));
     return books_.back();
 }
+
 
 std::filesystem::path coverDirectory() {
     return dataDirectory() / L"cache";
 }
 
-namespace {
-
-std::wstring cacheCover(const Book& book, std::wstring_view guid) {
-    const std::optional<std::uint32_t> index = book.coverIndex();
+CoverBytes coverOf(const fb3::Document& document, std::wstring_view guid) {
+    const std::optional<std::uint32_t> index = document.description().coverImageIndex;
     if (!index || guid.empty()) return {};
 
-    const fb3::ImagePart* part = book.image(*index);
+    const fb3::ImagePart* part = document.image(*index);
     if (!part || part->bytes.empty()) return {};
 
     const std::wstring_view extension = coverExtension(part->contentType.chars());
     if (extension.empty()) return {};   // svg и прочее, чего Image не покажет
 
-    std::wstring name{guid};
-    name += extension;
-    if (!writeFile(coverDirectory() / name, part->bytes)) return {};
-    return name;
+    CoverBytes cover;
+    cover.name = std::wstring(guid) + std::wstring(extension);
+    cover.bytes = part->bytes;
+
+    return cover;
 }
 
-BookEntry describe(const Book& book) {
-    const fb3::Description& description = book.description();
+namespace {
+
+BookEntry describe(const fb3::Document& document, const std::filesystem::path& path,
+                   std::uint64_t fileSize) {
+    const fb3::Description& description = document.description();
 
     BookEntry entry;
-    entry.path = book.path().wstring();
-    // Всё это пришло из книги, а её документ wxl.xml проверила целиком, когда
-    // открывала: assume_valid — запись этого довода в одном месте на три поля.
+    entry.path = path.wstring();
     // Ни одного assume_valid: модель книги отдаёт проверенный текст, потому
     // что документ проверила wxl.xml, когда его открывала.
     entry.bookId = description.id.to_utf16().wchars();
     entry.title = description.title.to_utf16().wchars();
     entry.authors = description.authorsLine().to_utf16().wchars();
-    entry.characterCount = book.characterCount();
+    entry.characterCount = document.characterCount();
 
-    std::error_code ignored;
-    const auto size = std::filesystem::file_size(book.path(), ignored);
-    if (!ignored) entry.fileSize = size;
+    // Размер файла приходит снаружи: узнать его -- обращение к диску, а на
+    // этом потоке их не бывает. Спрашивает его тот, кто читал сам файл, и
+    // спрашивает заодно, одной операцией.
+    entry.fileSize = fileSize;
 
     // Книга без названия бывает: в витрине лучше имя файла, чем пустая строка.
-    if (entry.title.empty()) entry.title = book.path().filename().wstring();
+    if (entry.title.empty()) entry.title = path.filename().wstring();
 
     return entry;
 }
@@ -216,17 +219,14 @@ bool BookState::hasBookmark(std::uint32_t offset) const {
     return false;
 }
 
-BookState loadBookState(std::wstring_view guid) {
+BookState parseBookState(std::string xml) {
     BookState state;
-    if (guid.empty()) return state;
 
-    const std::filesystem::path path = statePath(guid);
-    std::error_code ignored;
-    if (!std::filesystem::exists(path, ignored)) return state;
+    if (xml.empty()) return state;
 
     try {
         wxl::xml::document document;
-        const wxl::xml::node& root = document.load_file(path);
+        const wxl::xml::node& root = document.load(std::move(xml));
 
         if (const wxl::xml::node* reading = root.child("reading")) {
             state.charOffset = static_cast<std::uint32_t>(numberOf(*reading, "charOffset"));
@@ -247,9 +247,7 @@ BookState loadBookState(std::wstring_view guid) {
     return state;
 }
 
-bool saveBookState(std::wstring_view guid, const BookState& state) {
-    if (guid.empty()) return false;
-
+std::string bookStateXml(const BookState& state) {
     wxl::text::text_builder<> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
@@ -268,7 +266,8 @@ bool saveBookState(std::wstring_view guid, const BookState& state) {
     }
 
     out.append("</book>\n");
-    return writeFile(statePath(guid), out.view());
+
+    return std::string(out.view());
 }
 
 }  // namespace bukvitsa::reader

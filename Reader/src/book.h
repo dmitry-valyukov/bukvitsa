@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <optional>
 #include <vector>
 
@@ -47,14 +48,24 @@ struct ImageAsset {
 
 class Book {
 public:
-    /// @throw std::runtime_error, если файл не читается или это не FB3.
-    Book(const std::filesystem::path& path, IDWriteFactory* dwrite);
+    /// Байты файла книга получает готовыми: читает их рабочий поток, потому
+    /// что в интерфейсном обращений к диску не бывает, — а разбирает их
+    /// конструктор, здесь, в интерфейсном (память разбора из STA-пула).
+    /// Путь остаётся при книге как её имя: по нему она узнаётся в реестре и
+    /// показывается читателю.
+    ///
+    /// @throw std::runtime_error, если это не FB3 или он повреждён.
+    Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFactory* dwrite);
     ~Book();
 
     Book(const Book&) = delete;
     Book& operator=(const Book&) = delete;
 
     const std::filesystem::path& path() const { return path_; }
+    /// Разобранная книга. Отдана наружу затем, что реестру нужны её
+    /// метаданные и обложка, а не открытая книга целиком.
+    const fb3::Document& document() const { return document_; }
+
     const fb3::Description& description() const { return document_.description(); }
     std::uint32_t characterCount() const { return document_.characterCount(); }
 

@@ -26,6 +26,7 @@
 // стандартный заголовок MSVC уже не принимает.
 #include "book.h"
 #include "book_view.h"
+#include "io.h"
 #include "reader_panel.h"
 #include "store.h"
 
@@ -39,6 +40,12 @@ using namespace std::chrono_literals;
 namespace {
 
 using namespace bukvitsa::reader;
+
+using wxl::async::task;
+
+// Пространство имён книги: `using namespace bukvitsa::reader` его не приносит,
+// а обход каталога разбирает документ сам.
+namespace fb3 = bukvitsa::fb3;
 
 // Каким окно открывается, когда запоминать ещё нечего.
 constexpr int32_t kInitialWidth = 1280;
@@ -63,17 +70,327 @@ constexpr auto kPositionQuiet = 1500ms;
 // возвращать.
 enum class Screen { Start, Library, Book };
 
+// ---- то, из чего собрано приложение ---------------------------------------
+//
+// Одна связка на всех, потому что корутины ниже держат её у себя в кадре, а
+// девять отдельных параметров у каждой — это девять мест, где однажды забудут
+// один. Всё внутри — либо shared_ptr, либо обёртка wxl, то есть ручка; копия
+// такой связки ничего не копирует по существу.
+struct App {
+    Io* io = nullptr;
+    wxl::Window window;
+    std::shared_ptr<Settings> settings;
+    std::shared_ptr<Library> library;
+    std::shared_ptr<BookState> state;
+    std::shared_ptr<BookView> view;
+    std::shared_ptr<ReaderPanel> panel;
+    std::shared_ptr<LibraryScreen> shelf;
+    std::shared_ptr<StartScreen> screen;
+    std::shared_ptr<Screen> shown;
+    std::shared_ptr<Screen> bookCameFrom;
+};
+
+// ---- корутины приложения --------------------------------------------------
+//
+// Каждая исполняется в интерфейсном потоке и уходит с него ровно на `co_await`
+// — на время, пока рабочий поток читает или пишет файл. Между двумя co_await
+// код обычный: он трогает XAML и общее состояние, потому что он и есть тот
+// самый поток.
+
+/// Пишет настройки. Копией, а не ссылкой: между co_await читатель успеет
+/// поменять что-нибудь ещё, и на диск должно уйти то, что решили писать.
+task saveSettingsLater(Io& io, Settings settings) {
+    co_await io.writeFile(settingsPath(), settingsXml(settings));
+}
+
+/// Пишет состояние книги: место чтения и закладки.
+task saveStateLater(Io& io, std::wstring guid, BookState state) {
+    if (guid.empty()) co_return;
+
+    co_await io.writeFile(statePath(guid), bookStateXml(state));
+}
+
+/// Пишет реестр.
+task saveLibraryLater(Io& io, std::string xml) {
+    co_await io.writeFile(libraryPath(), std::move(xml));
+}
+
+/// Достраивает полку: у каждой книги свой файл состояния, и читаются они по
+/// одному, уже после того, как полка показана.
+///
+/// Это и есть «библиотека наполняется по мере чтения»: карточки встают сразу,
+/// а «прочитано 42%» проступает на каждой, как только её файл прочитан. Полка
+/// с сотней книг не ждёт сотни обращений к диску, чтобы показать первую.
+task fillProgress(Io& io, std::shared_ptr<LibraryScreen> shelf, std::vector<BookEntry> books) {
+    for (const BookEntry& book : books) {
+        if (book.characterCount == 0) continue;   // не открывалась -- и читать нечего
+
+        const std::optional<std::string> xml = co_await io.readFile(statePath(book.guid));
+
+        if (!xml) continue;
+
+        const BookState state = parseBookState(*xml);
+
+        shelf->setProgress(book.guid, state.charOffset, state.bookmarks.size());
+    }
+}
+
+/// Обходит каталог и добавляет из него книги — по одной, на глазах у читателя.
+///
+/// Здесь и видно, зачем всё это затевалось. Каталог перечисляется на рабочем
+/// потоке; каждая книга читается там же; разбирается она здесь, между двумя
+/// `co_await`, и сразу встаёт на полку. Ни один шаг не ждёт остальных: первая
+/// книга появляется на полке, пока десятая ещё не прочитана, — а окно всё это
+/// время отвечает, потому что интерфейсный поток каждый раз возвращается в
+/// свой цикл сообщений.
+///
+/// Разбирается при этом `fb3::Document`, а не `Book`: реестру нужны метаданные
+/// и обложка, а движок вёрстки с пагинатором книге, которую никто не открывал,
+/// ни к чему.
+task addFolderFlow(App app, std::filesystem::path folder, std::function<void()> showLibrary) {
+    Io& io = *app.io;
+
+    // Полка -- прежде обхода: читатель, добавивший каталог, должен видеть, как
+    // тот наполняется, а не пустой стартовый экран, за которым что-то
+    // происходит.
+    showLibrary();
+
+    const std::vector<DirectoryEntry> found = co_await io.list(folder, L"*.fb3");
+
+    bool added = false;
+
+    for (const DirectoryEntry& entry : found) {
+        if (entry.isDirectory) continue;
+
+        const std::filesystem::path path = folder / entry.name;
+
+        const std::optional<std::string> bytes = co_await io.readFile(path);
+
+        if (!bytes) continue;
+
+        const std::uint64_t fileSize = bytes->size();
+
+        // Разбор -- единственное место здесь, которое может бросить, и ловится
+        // он вокруг разбора, а не вокруг всего шага: не книга, битая книга,
+        // книга от будущего формата — не повод бросать обход. Каталог с сотней
+        // файлов не должен спотыкаться об один.
+        std::optional<fb3::Document> document;
+
+        try {
+            document.emplace(std::move(*bytes));
+        } catch (const std::exception&) {
+            continue;
+        }
+
+        const std::size_t knownBefore = app.library->books().size();
+
+        const BookEntry stored = app.library->add(*document, path, fileSize);
+
+        const bool isNew = app.library->books().size() != knownBefore;
+
+        if (const CoverBytes cover = coverOf(*document, stored.guid); !cover.name.empty())
+            co_await io.writeFile(coverDirectory() / cover.name, std::string(cover.bytes));
+
+        added = true;
+
+        // Полка растёт на каждой книге, а не в конце: в этом и смысл — читатель
+        // видит, как она наполняется. Одной карточкой, а не пересборкой всей
+        // полки: та стоила бы квадрата от числа книг и стирала бы прогресс,
+        // который к тому времени уже проступил на соседях.
+        if (isNew && *app.shown == Screen::Library) app.shelf->appendBook(stored);
+    }
+
+    if (added) co_await io.writeFile(libraryPath(), app.library->toXml());
+}
+
+/// «Продолжить чтение»: найти книгу, которую читали, и открыть её.
+///
+/// Путь в настройках — копия того, что в реестре, и она там ради быстрого
+/// пути. Протух — спрашиваем реестр по guid; нет и там — читателю нечего
+/// продолжать, и он хотел открыть книгу.
+task continueReading(Io& io, std::shared_ptr<Settings> settings, std::shared_ptr<Library> library,
+                     std::function<void(std::filesystem::path)> openBook,
+                     std::function<void()> addBook) {
+    std::filesystem::path path = settings->lastBookPath;
+
+    if (!path.empty() && !co_await io.fileExists(path)) path.clear();
+
+    if (path.empty()) {
+        if (const BookEntry* entry = library->find(settings->lastBookGuid)) path = entry->path;
+
+        if (!path.empty() && !co_await io.fileExists(path)) path.clear();
+    }
+
+    if (path.empty()) {
+        addBook();
+        co_return;
+    }
+
+    openBook(path);
+}
+
+/// Открывает книгу: от байтов на диске до страницы на экране.
+///
+/// Порядок здесь -- это порядок обязательств. Сначала книга разбирается (и
+/// только если разобралась, старая уступает ей место), потом на диск уходит
+/// место чтения предыдущей, и лишь затем реестр, обложка, настройки и
+/// состояние новой. Каждый `co_await` -- это выход в цикл сообщений: окно всё
+/// это время живо, отвечает и перерисовывается.
+task openBookFlow(App app, std::filesystem::path path) {
+    Io& io = *app.io;
+
+    const std::optional<std::string> bytes = co_await io.readFile(path);
+
+    if (!bytes) {
+        ::MessageBoxW(window_handle(app.window),
+                      (L"Не удалось прочитать файл книги:\n" + path.wstring()).c_str(), L"Буквица",
+                      MB_OK | MB_ICONWARNING);
+        co_return;
+    }
+
+    const std::uint64_t fileSize = bytes->size();
+
+    std::shared_ptr<Book> book;
+
+    try {
+        book = std::make_shared<Book>(path, std::move(*bytes), dwriteFactory());
+    } catch (std::exception const& failure) {
+        // Разговор с читателем, а не запись в лог: он только что выбрал этот
+        // файл и вправе узнать, что с ним не так.
+        wxl::text::u16_text const reason = wxl::text::assume_valid(failure.what()).to_utf16();
+        std::wstring const complaint = L"Не удалось открыть книгу:\n" + path.wstring() + L"\n\n" +
+                                       std::wstring(reason.wchars());
+        ::MessageBoxW(window_handle(app.window), complaint.c_str(), L"Буквица",
+                      MB_OK | MB_ICONWARNING);
+        co_return;
+    }
+
+    // Место чтения предыдущей книги — на диск сразу: сейчас settings укажет на
+    // другую, и записывать станет некуда.
+    if (!app.settings->lastBookGuid.empty() && app.view->isOpen()) {
+        app.state->charOffset = app.view->readingPosition();
+
+        co_await io.writeFile(statePath(app.settings->lastBookGuid), bookStateXml(*app.state));
+    }
+
+    // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
+    // переедет вместе со всеми ссылками в него.
+    const BookEntry stored = app.library->add(book->document(), path, fileSize);
+
+    if (const CoverBytes cover = coverOf(book->document(), stored.guid); !cover.name.empty())
+        co_await io.writeFile(coverDirectory() / cover.name, std::string(cover.bytes));
+
+    co_await io.writeFile(libraryPath(), app.library->toXml());
+
+    app.settings->lastBookGuid = stored.guid;
+    app.settings->lastBookPath = stored.path;
+
+    co_await io.writeFile(settingsPath(), settingsXml(*app.settings));
+
+    const std::optional<std::string> stateXml = co_await io.readFile(statePath(stored.guid));
+
+    *app.state = stateXml ? parseBookState(*stateXml) : BookState{};
+
+    app.view->open(std::move(book), app.state->charOffset);
+    app.panel->setState(app.state.get());
+
+    // Сверстать и нарисовать до показа. Полоса займёт то же место, что и экран,
+    // который сейчас на нём стоит, — а у него и спрашиваем размер с масштабом.
+    // Иначе читатель, нажав «Продолжить чтение», успевает увидеть пустой лист:
+    // элемент попадает в дерево сразу, а рисовать его есть чем только со
+    // следующего кадра.
+    if (Nullable<UIElement> const showing = app.window.content()) {
+        if (Nullable<XamlRoot> const root = showing->xamlRoot()) {
+            Size const area = root->size();
+            app.view->prepare(area.width, area.height,
+                              static_cast<float>(root->rasterizationScale()));
+        }
+    }
+
+    *app.bookCameFrom = *app.shown;
+    *app.shown = Screen::Book;
+    app.window.content(app.view->root());
+}
+
+/// Запуск: настройки, реестр, первый экран и только потом -- показ окна.
+///
+/// Окно строится пустым и невидимым, а показывается в конце: место, куда его
+/// поставить, лежит в настройках, и открыть его сначала посреди экрана, а
+/// потом переставить -- значит показать читателю прыжок. Ждать при этом нечего:
+/// файл настроек читает рабочий поток, а этот тем временем уже крутит цикл
+/// сообщений.
+task startupFlow(App app, wxl::AppWindow appWindow, wxl::DispatcherQueueTimer splashTimer,
+                 std::function<void(std::filesystem::path)> openBook,
+                 std::function<void()> showStartScreen) {
+    Io& io = *app.io;
+
+    const std::optional<std::string> settingsXmlText = co_await io.readFile(settingsPath());
+
+    *app.settings = parseSettings(settingsXmlText.value_or(std::string{}));
+
+    app.view->setTheme(app.settings->theme);
+    app.view->setFontSize(app.settings->fontSize);
+    app.view->setLineHeight(app.settings->lineHeight);
+    app.view->setMargin(app.settings->margin);
+
+    // Реестр читается всегда, а не только когда показывают полку: он маленький,
+    // читает его чужой поток, и без него не ответить на «продолжить чтение» по
+    // guid, если путь в настройках протух.
+    const std::optional<std::string> libraryXmlText = co_await io.readFile(libraryPath());
+
+    app.library->loadFrom(libraryXmlText.value_or(std::string{}));
+
+    // Продолжать чтение — только если книга на месте. Путь в настройках копия
+    // того, что в реестре, и она здесь ради быстрого пути; протухла —
+    // спрашиваем реестр по guid.
+    std::filesystem::path lastBook = app.settings->lastBookPath;
+
+    if (!lastBook.empty() && !co_await io.fileExists(lastBook)) lastBook.clear();
+
+    if (lastBook.empty()) {
+        if (const BookEntry* entry = app.library->find(app.settings->lastBookGuid)) {
+            lastBook = entry->path;
+
+            if (!co_await io.fileExists(lastBook)) lastBook.clear();
+        }
+    }
+
+    appWindow.resize({kInitialWidth, kInitialHeight});
+
+    // Размер по умолчанию ставится всегда, и лишь потом накрывается
+    // запомненным. Иначе испорченная строка в настройках оставила бы окно
+    // таким, каким его открыл WinUI: placement молча ничего не делает, когда
+    // разбирать нечего, — и это правильно, но своё умолчание к тому моменту
+    // должно быть уже на месте.
+    if (!app.settings->windowPlacement.empty()) app.window.placement(app.settings->windowPlacement);
+
+    if (app.settings->continueReading && !lastBook.empty()) {
+        openBook(lastBook);
+    } else {
+        showStartScreen();
+        splashTimer.start();
+    }
+
+    app.window.activate();
+}
+
 }  // namespace
 
 wxl::Teardown wxl_launched() {
-    auto settings = std::make_shared<Settings>(loadSettings());
+    // Пустые: их наполнит запуск, и наполнит асинхронно. Ни настройки, ни
+    // реестр здесь не читаются — в этом потоке к диску не обращаются вовсе.
+    auto settings = std::make_shared<Settings>();
     auto library = std::make_shared<Library>();
-    library->load();
 
     auto window = Window{
         title = L"Буквица",
         minSize = {720, 520},
     };
+
+    // Ввод-вывод поднимается сразу за окном: раньше нельзя (нужна его очередь),
+    // позже незачем (первое, что делает приложение, — читает настройки).
+    auto io = std::make_shared<Io>();
+    io->start(window.dispatcherQueue());
 
     auto const appWindow = window.appWindow();
 
@@ -92,11 +409,7 @@ wxl::Teardown wxl_launched() {
     auto state = std::make_shared<BookState>();
 
     // Настройки чтения общие для всех книг: читателю нужен один привычный вид,
-    // а не разный шрифт в каждой книге.
-    view->setTheme(settings->theme);
-    view->setFontSize(settings->fontSize);
-    view->setLineHeight(settings->lineHeight);
-    view->setMargin(settings->margin);
+    // а не разный шрифт в каждой книге. Ставит их запуск, когда прочитает файл.
 
     // ---- сохранение места чтения ----
     //
@@ -106,12 +419,12 @@ wxl::Teardown wxl_launched() {
     positionTimer.interval(kPositionQuiet);
     positionTimer.isRepeating(false);
 
-    auto const rememberPosition = [view, settings, state] {
+    auto const rememberPosition = [io, view, settings, state] {
         // Книга закрыта -- писать нечего: место чтения принадлежит ей, а не
         // окну, и ноль незанятой полосы стёр бы то, что уже записано.
         if (settings->lastBookGuid.empty() || !view->isOpen()) return;
         state->charOffset = view->readingPosition();
-        saveBookState(settings->lastBookGuid, *state);
+        io->spawn(saveStateLater(*io, settings->lastBookGuid, *state));
     };
 
     positionTimer.add_onTick([positionTimer, rememberPosition](Object const&, Object const&) {
@@ -148,7 +461,11 @@ wxl::Teardown wxl_launched() {
         window.content(screen->root());
     };
 
-    auto const showLibrary = [window, shelf, library, settings, shown, rememberPosition,
+    // Всё, из чего собрано приложение, одной связкой: её берут корутины.
+    App const app{io.get(), window, settings, library, state,        view,
+                  panel,    shelf,  screen,   shown,   bookCameFrom};
+
+    auto const showLibrary = [io, app, window, shelf, library, settings, shown, rememberPosition,
                               closePanel] {
         closePanel();
         rememberPosition();   // и полка тут же покажет свежий процент
@@ -157,55 +474,14 @@ wxl::Teardown wxl_launched() {
         shelf->show(*library, settings->continueReading);
         *shown = Screen::Library;
         window.content(shelf->root());
+
+        // Карточки уже стоят; проценты проступят на них по мере того, как
+        // рабочий поток прочитает файлы состояния — по одному на книгу.
+        io->spawn(fillProgress(*io, shelf, library->books()));
     };
 
-    auto const openBook = [window, view, panel, library, settings, state, shown, bookCameFrom,
-                           rememberPosition](std::filesystem::path const& path) {
-        std::shared_ptr<Book> book;
-        try {
-            book = std::make_shared<Book>(path, dwriteFactory());
-        } catch (std::exception const& failure) {
-            // Разговор с читателем, а не запись в лог: он только что выбрал
-            // этот файл и вправе узнать, что с ним не так.
-            wxl::text::u16_text const reason = wxl::text::assume_valid(failure.what()).to_utf16();
-            std::wstring const complaint = L"Не удалось открыть книгу:\n" + path.wstring() + L"\n\n" +
-                                           std::wstring(reason.wchars());
-            ::MessageBoxW(window_handle(window), complaint.c_str(), L"Буквица",
-                          MB_OK | MB_ICONWARNING);
-            return;
-        }
-
-        // Место чтения предыдущей книги — на диск сразу: сейчас settings
-        // укажет на другую, и записывать станет некуда.
-        rememberPosition();
-
-        BookEntry const& stored = library->add(*book);
-        library->save();
-
-        settings->lastBookGuid = stored.guid;
-        settings->lastBookPath = stored.path;
-        saveSettings(*settings);
-
-        *state = loadBookState(stored.guid);
-        view->open(std::move(book), state->charOffset);
-        panel->setState(state.get());
-
-        // Сверстать и нарисовать до показа. Полоса займёт то же место, что и
-        // экран, который сейчас на нём стоит, — а у него и спрашиваем размер с
-        // масштабом. Иначе читатель, нажав «Продолжить чтение», успевает
-        // увидеть пустой лист: элемент попадает в дерево сразу, а рисовать его
-        // есть чем только со следующего кадра.
-        if (Nullable<UIElement> const showing = window.content()) {
-            if (Nullable<XamlRoot> const root = showing->xamlRoot()) {
-                Size const area = root->size();
-                view->prepare(area.width, area.height,
-                              static_cast<float>(root->rasterizationScale()));
-            }
-        }
-
-        *bookCameFrom = *shown;
-        *shown = Screen::Book;
-        window.content(view->root());
+    auto const openBook = [io, app](std::filesystem::path const& path) {
+        io->spawn(openBookFlow(app, path));
     };
 
     auto const addBook = [window, openBook] {
@@ -214,7 +490,13 @@ wxl::Teardown wxl_launched() {
     };
 
     screen->onAddBook = addBook;
-    screen->onAddFolder = [] {};   // наблюдаемый каталог — следующая итерация
+    auto const addFolder = [io, app, window, showLibrary] {
+        std::filesystem::path const folder = askForFolder(window_handle(window));
+
+        if (!folder.empty()) io->spawn(addFolderFlow(app, folder, showLibrary));
+    };
+
+    screen->onAddFolder = addFolder;
     screen->onLibrary = showLibrary;
 
     shelf->onAddBook = addBook;
@@ -222,12 +504,14 @@ wxl::Teardown wxl_launched() {
     shelf->onOpen = [library, openBook](std::wstring guid) {
         if (BookEntry const* entry = library->find(guid)) openBook(entry->path);
     };
-    shelf->onContinueAtStartChanged = [settings](bool wanted) {
+    shelf->onContinueAtStartChanged = [io, settings](bool wanted) {
         settings->continueReading = wanted;
-        saveSettings(*settings);
+        io->spawn(saveSettingsLater(*io, *settings));
     };
 
-    panel->onStateChanged = [settings, state] { saveBookState(settings->lastBookGuid, *state); };
+    panel->onStateChanged = [io, settings, state] {
+        io->spawn(saveStateLater(*io, settings->lastBookGuid, *state));
+    };
 
     panel->onLibrary = showLibrary;
 
@@ -241,29 +525,16 @@ wxl::Teardown wxl_launched() {
         }
     };
 
-    panel->onSettingsChanged = [settings, view] {
+    panel->onSettingsChanged = [io, settings, view] {
         settings->theme = view->theme();
         settings->fontSize = view->fontSize();
         settings->lineHeight = view->lineHeight();
         settings->margin = view->margin();
-        saveSettings(*settings);
+        io->spawn(saveSettingsLater(*io, *settings));
     };
 
-    screen->onContinueReading = [settings, library, openBook, addBook] {
-        // Путь в настройках — копия того, что в реестре, и она здесь ради
-        // быстрого пути. Протухла — спрашиваем реестр по guid; нет и там —
-        // читателю нечего продолжать, и он хотел открыть книгу.
-        std::wstring path = settings->lastBookPath;
-        if (path.empty() || !std::filesystem::exists(path)) {
-            if (BookEntry const* entry = library->find(settings->lastBookGuid)) {
-                path = entry->path;
-            }
-        }
-        if (path.empty() || !std::filesystem::exists(path)) {
-            addBook();
-            return;
-        }
-        openBook(path);
+    screen->onContinueReading = [io, settings, library, openBook, addBook] {
+        io->spawn(continueReading(*io, settings, library, openBook, addBook));
     };
 
     // ---- клавиши, общие для обоих экранов ----
@@ -368,54 +639,23 @@ wxl::Teardown wxl_launched() {
     installKeys(shelf->root());
     installKeys(view->root());
 
-    // ---- чем открыться ----
-    //
-    // Настройки одни и отвечают на один вопрос: показывать заставку или сразу
-    // продолжать чтение. Реестр на этом пути не читается вовсе — путь к книге
-    // лежит в настройках именно ради этого.
-    bool const continueAtOnce = settings->continueReading &&
-                                !settings->lastBookPath.empty() &&
-                                std::filesystem::exists(settings->lastBookPath);
-
-    if (continueAtOnce) {
-        openBook(settings->lastBookPath);
-    } else {
-        window.content(screen->root());
-    }
-
-    window.activate();
-
-    // Место и размер — после activate. До него окно ещё не создано настолько,
-    // чтобы их принять: вызов отрабатывает, а показывается всё равно
-    // минимальное.
-    //
-    // Размер по умолчанию ставится всегда, и лишь потом накрывается
-    // запомненным. Иначе испорченная строка в настройках оставила бы окно
-    // таким, каким его открыл WinUI: placement молча ничего не делает, когда
-    // разбирать нечего, — и это правильно, но своё умолчание к тому моменту
-    // должно быть уже на месте.
-    // Перетаскивание книги в окно. После activate, потому что раньше окна ещё
-    // нет, а регистрация цели идёт на его HWND.
+    // Перетаскивание книги в окно. Регистрация цели идёт на HWND, который к
+    // этому моменту уже есть -- окно создано, хотя ещё и не показано.
     accept_file_drops(window, [openBook](std::vector<std::wstring> const& paths) {
         // Бросили пачку — открываем первую: читалка показывает одну книгу, а
         // добавлять остальные в реестр молча значило бы решать за читателя.
         if (!paths.empty()) openBook(paths.front());
     });
 
-    appWindow.resize({kInitialWidth, kInitialHeight});
-    if (!settings->windowPlacement.empty()) {
-        window.placement(settings->windowPlacement);
-    }
-
     // ---- сохранение места окна ----
     auto saveTimer = window.dispatcherQueue().createTimer();
     saveTimer.interval(kSaveQuiet);
     saveTimer.isRepeating(false);
 
-    auto const rememberWindow = [window, settings] {
+    auto const rememberWindow = [io, window, settings] {
         settings->windowPlacement =
             std::wstring{reinterpret_cast<wchar_t const*>(window_placement(window).c_str())};
-        saveSettings(*settings);
+        io->spawn(saveSettingsLater(*io, *settings));
     };
 
     saveTimer.add_onTick([saveTimer, rememberWindow](Object const&, Object const&) {
@@ -447,11 +687,21 @@ wxl::Teardown wxl_launched() {
         splashTimer.stop();
         screen->reveal();
     });
-    if (!continueAtOnce) splashTimer.start();
+
+    // ---- запуск ----
+    //
+    // Всё, что читалка знает о себе, читается отсюда и асинхронно: настройки,
+    // реестр, книга, на которой остановились. Окно показывается в конце этой
+    // цепочки — уже на своём месте и с уже выбранным экраном.
+    io->spawn(startupFlow(app, appWindow, splashTimer, openBook, showStartScreen));
 
     // Захват окна — это и есть то, что держит его живым, пока идёт
     // приложение; остальное держится за компанию. Пул STA не наш: его строит
     // и держит сама wxl в своей точке входа, и второй такой падает.
-    return [window, screen, shelf, view, library, settings, saveTimer, positionTimer,
-            splashTimer](Reason) {};
+    //
+    // Рабочий поток останавливается здесь же: очередь интерфейсного к этому
+    // моменту уже не принимает заданий, и операции, не успевшие вернуться,
+    // возобновлять некому и незачем.
+    return [io, window, screen, shelf, view, library, settings, saveTimer, positionTimer,
+            splashTimer](Reason) { io->stop(); };
 }

@@ -20,11 +20,18 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
+
+// Импорт последним и после всех стандартных заголовков: реестру нужен
+// разобранный документ, а не открытая книга -- обходя каталог, читалка
+// разбирает файл ради метаданных и обложки и не строит ни движка вёрстки, ни
+// пагинатора. Значит, всякий, кто включает этот заголовок, включает его после
+// своих стандартных.
+import bukvitsa.fb3;
 
 namespace bukvitsa::reader {
 
-class Book;
 
 /// Одна книга в реестре — ровно то, что нужно витрине и быстрому запуску.
 struct BookEntry {
@@ -43,11 +50,16 @@ public:
     /// Версия формата: незнакомое игнорируется, а не роняет разбор.
     static constexpr int kVersion = 1;
 
-    /// Читает library.xml. Файла нет — реестр просто пуст.
-    void load();
+    /// Разбирает library.xml. Пусто или битое -- реестр просто пуст: битый
+    /// реестр это пустая витрина, а не отказ запуститься, и книги никуда не
+    /// денутся -- они лежат там, где лежали, и добавятся снова.
+    ///
+    /// Байты приносит `Io::readFile`: читать в интерфейсном потоке нельзя, а
+    /// разбирать -- только в нём.
+    void loadFrom(std::string xml);
 
-    /// Пишет library.xml через временный файл с заменой.
-    bool save() const;
+    /// Текст library.xml -- то, что уходит в `Io::writeFile`.
+    std::string toXml() const;
 
     const std::vector<BookEntry>& books() const { return books_; }
 
@@ -59,14 +71,21 @@ public:
     const BookEntry* findSame(const BookEntry& candidate) const;
 
     /// Добавляет книгу или обновляет уже известную, и отдаёт запись в реестре.
+    ///
+    /// Обложку он больше не пишет: запись файла -- дело асинхронное, а здесь
+    /// сходятся только открытая книга и guid. Байты обложки берёт
+    /// `coverOf()`, а кладёт их на диск тот, кто умеет ждать.
     /// Обновляет намеренно: файл могли переложить, а название — поправить в
-    /// новом издании. Заодно кладёт обложку в кэш, потому что только здесь
-    /// сходятся открытая книга и guid, под которым обложке лежать.
-    const BookEntry& add(const Book& book);
+    /// новом издании.
+    const BookEntry& add(const fb3::Document& document, const std::filesystem::path& path,
+                         std::uint64_t fileSize);
 
 private:
     std::vector<BookEntry> books_;
 };
+
+/// Путь к library.xml.
+std::filesystem::path libraryPath();
 
 /// Новый guid записи реестра, в фигурных скобках, как их пишет Windows.
 std::wstring newGuid();
@@ -74,6 +93,16 @@ std::wstring newGuid();
 /// Каталог, в котором лежат обложки. Отдельно от books намеренно: обложку
 /// можно смело стереть -- она восстановится из книги, — а место чтения нельзя.
 std::filesystem::path coverDirectory();
+
+/// Обложка книги: имя файла, под которым ей лежать в кэше, и её байты.
+/// Пусто, если у книги обложки нет или она в формате, который витрине не
+/// показать.
+struct CoverBytes {
+    std::wstring name;
+    std::string_view bytes;   ///< вид в саму книгу: она жива, пока обложку пишут
+};
+
+CoverBytes coverOf(const fb3::Document& document, std::wstring_view guid);
 
 /// Закладка: место в книге и то, по чему читатель его узнает.
 ///
@@ -104,7 +133,13 @@ struct BookState {
     bool hasBookmark(std::uint32_t offset) const;
 };
 
-BookState loadBookState(std::wstring_view guid);
-bool saveBookState(std::wstring_view guid, const BookState& state);
+/// Путь к файлу состояния книги.
+std::filesystem::path statePath(std::wstring_view guid);
+
+/// Разбирает books\{guid}.xml. Пусто или битое -- книга, открытая с начала,
+/// а не книга, которая не открылась.
+BookState parseBookState(std::string xml);
+/// Текст books\{guid}.xml.
+std::string bookStateXml(const BookState& state);
 
 }  // namespace bukvitsa::reader

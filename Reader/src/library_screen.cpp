@@ -33,21 +33,24 @@ ImageSource coverOf(const BookEntry& entry) {
     return ImageSource{L"file:///" + full};
 }
 
-/// Сколько прочитано, словами витрины. Место чтения лежит в отдельном файле на
-/// книгу, и читается оно здесь — то есть только когда полку показывают.
-std::wstring progressOf(const BookEntry& entry) {
+/// Сколько прочитано, словами витрины.
+///
+/// Место чтения лежит в отдельном файле на книгу, и читает его фоновая
+/// корутина -- уже после того, как карточка встала на полку. Поэтому здесь
+/// два состояния: «ещё не знаем» и то, что принесли.
+std::wstring progressOf(const BookEntry& entry, std::uint32_t charOffset, std::size_t bookmarks) {
     if (entry.characterCount == 0) return L"не открывалась";
 
-    const BookState state = loadBookState(entry.guid);
-    if (state.charOffset == 0) return L"не открывалась";
 
-    const double share = static_cast<double>(state.charOffset) / entry.characterCount;
+    if (charOffset == 0) return L"не открывалась";
+
+    const double share = static_cast<double>(charOffset) / entry.characterCount;
     std::wstring said = std::format(L"прочитано {:.0f}%", share * 100.0);
 
     // Закладки видно прямо на полке: их наличие -- признак книги, к которой
     // возвращаются, и его стоит показать раньше, чем её откроют.
-    if (!state.bookmarks.empty()) {
-        said += std::format(L"    закладок: {}", state.bookmarks.size());
+    if (bookmarks != 0) {
+        said += std::format(L"    закладок: {}", bookmarks);
     }
     return said;
 }
@@ -130,7 +133,29 @@ LibraryScreen::LibraryScreen() {
     });
 }
 
+void LibraryScreen::appendBook(const BookEntry& entry) {
+    shelf_.value().children().append(shelfItem(entry));
+
+    emptyNote_.value().visibility(Visibility::Collapsed);
+}
+
+void LibraryScreen::setProgress(std::wstring_view guid, std::uint32_t charOffset,
+                                std::size_t bookmarks) {
+    const auto found = progress_.find(std::wstring(guid));
+
+    if (found == progress_.end()) return;   // полку успели пересобрать
+
+    const BookEntry* entry = shown_ ? shown_->find(guid) : nullptr;
+
+    if (!entry) return;
+
+    found->second.text(progressOf(*entry, charOffset, bookmarks));
+}
+
 void LibraryScreen::show(const Library& library, bool continueAtStart) {
+    shown_ = &library;
+    progress_.clear();
+
     continueBox_.value().isChecked(continueAtStart);
 
     // Полка пересобирается целиком. Сравнивать её с реестром и править
@@ -149,6 +174,19 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
     // Карточка — это кнопка: по книге щёлкают, и всё, что кнопка умеет сама
     // (наведение, нажатие, фокус, клавиатура), достаётся даром.
     std::wstring const guid = entry.guid;
+
+    // Строка прогресса ставится пустой не просто так: «не открывалась» было бы
+    // неправдой, пока файл состояния ещё не прочитан, а карточка обязана
+    // появиться раньше, чем он будет прочитан. Настоящий текст приносит
+    // setProgress().
+    TextBlock progress = TextBlock{
+        entry.characterCount == 0 ? std::wstring{L"не открывалась"} : std::wstring{},
+        fontSize = 13,
+        foreground = SolidColorBrush{ARGB{kDim}},
+        Margin{0, 8, 0, 0},
+    };
+
+    progress_.insert_or_assign(guid, progress);
 
     return Button{
         hAlign.stretch,
@@ -199,12 +237,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                     maxLines = 1,
                     textTrimming.characterEllipsis,
                 },
-                TextBlock{
-                    progressOf(entry),
-                    fontSize = 13,
-                    foreground = SolidColorBrush{ARGB{kDim}},
-                    Margin{0, 8, 0, 0},
-                },
+                progress,
             },
         },
     };
