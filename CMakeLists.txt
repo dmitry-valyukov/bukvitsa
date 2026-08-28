@@ -187,6 +187,7 @@ if(BUKVITSA_BUILD_TESTS)
 endif()
 
 add_subdirectory(FB3)
+add_subdirectory(MathML)
 add_subdirectory(Typography)
 if(WIN32)
     add_subdirectory(Reader)

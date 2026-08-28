@@ -28,6 +28,8 @@ import wxl.core;
 #include "bukvitsa/typography/page.h"
 
 import bukvitsa.fb3;
+import bukvitsa.mathml;
+import wxl.text;
 
 using namespace bukvitsa;
 
@@ -143,6 +145,26 @@ void testFormulas(IDWriteFactory* dwrite) {
     }
     check(!threw, "мусор не выходит наружу исключением");
 
+    // Вся цепочка EPUB: MathML → TeX → MicroTeX. Формула квадратного
+    // уравнения в том виде, в каком её пишут конвертеры издателей.
+    {
+        const std::optional<wxl::text::u8_view> mathml = wxl::text::checked(
+            "<math display=\"block\"><mi>x</mi><mo>=</mo><mfrac>"
+            "<mrow><mo>\xE2\x88\x92</mo><mi>b</mi><mo>\xC2\xB1</mo><msqrt>"
+            "<msup><mi>b</mi><mn>2</mn></msup><mo>\xE2\x88\x92</mo><mn>4</mn><mi>a</mi>"
+            "<mi>c</mi></msqrt></mrow><mrow><mn>2</mn><mi>a</mi></mrow></mfrac></math>");
+        const std::optional<mathml::TexFormula> tex =
+            mathml ? mathml::toTex(*mathml) : std::nullopt;
+        check(tex.has_value() && tex->display, "MathML переведена в TeX, display распознан");
+        if (tex) {
+            const std::unique_ptr<typography::Formula> converted =
+                formulas.parse(tex->tex, 20.0f, 600.0f);
+            check(converted && converted->width() > 30.0f &&
+                      converted->baseline() < converted->height(),
+                  "переведённая формула разобрана MicroTeX и имеет свес дроби");
+        }
+    }
+
     // Растеризация: формула в битмап через тот же ID2D1DeviceContext, каким
     // рисуется страница. COM уже поднят STA-пулом; парного CoUninitialize
     // здесь нет и не должно быть — он валил бы COM под ногами остальных
@@ -193,7 +215,8 @@ void testFormulas(IDWriteFactory* dwrite) {
     check(inked > 50, "формула оставила след на битмапе");
 
     // Диагностический крючок: снимок битмапа в PNG, когда просят глазами.
-    if (const char* shot = std::getenv("BUKVITSA_FORMULA_SHOT")) {
+    char shot[MAX_PATH]{};
+    if (GetEnvironmentVariableA("BUKVITSA_FORMULA_SHOT", shot, MAX_PATH) > 0) {
         Microsoft::WRL::ComPtr<IWICStream> stream;
         Microsoft::WRL::ComPtr<IWICBitmapEncoder> encoder;
         Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> frame;
