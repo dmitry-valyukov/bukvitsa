@@ -45,6 +45,10 @@ wxl_add_doxygen_site(docs_wxl
         "${BUKVITSA_WXL_ROOT}/wxl.logging/src"
         "${BUKVITSA_WXL_ROOT}/wxl.logging/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.xml/src"
+        "${BUKVITSA_WXL_ROOT}/wxl.html/src"
+        "${BUKVITSA_WXL_ROOT}/wxl.html/doc"
+        "${BUKVITSA_WXL_ROOT}/wxl.bb/src"
+        "${BUKVITSA_WXL_ROOT}/wxl.rsdn/src"
         "${BUKVITSA_WXL_ROOT}/wxl.winui/src"
         "${BUKVITSA_WXL_ROOT}/wxl.winui/doc"
     EXCLUDE
@@ -74,6 +78,7 @@ wxl_add_doxygen_site(docs
         "${PROJECT_SOURCE_DIR}/README.md"
         "${PROJECT_SOURCE_DIR}/docs"
         "${PROJECT_SOURCE_DIR}/FB3/src"
+        "${PROJECT_SOURCE_DIR}/MathML/src"
         "${PROJECT_SOURCE_DIR}/Typography/include"
         "${PROJECT_SOURCE_DIR}/Typography/src"
         "${PROJECT_SOURCE_DIR}/Reader/src"

@@ -148,6 +148,18 @@ if(NOT TARGET wxl::async)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.async/src" "${CMAKE_BINARY_DIR}/wxl.async" EXCLUDE_FROM_ALL)
 endif()
 
+# Семейство разметок — их требует wxl.winui: контролы HtmlBlock, BbBlock и
+# RsdnBlock линкуют свои парсеры. Той же формой, что модули выше.
+if(NOT TARGET wxl::html)
+    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.html/src" "${CMAKE_BINARY_DIR}/wxl.html" EXCLUDE_FROM_ALL)
+endif()
+if(NOT TARGET wxl::bb)
+    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.bb/src" "${CMAKE_BINARY_DIR}/wxl.bb" EXCLUDE_FROM_ALL)
+endif()
+if(NOT TARGET wxl::rsdn)
+    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.rsdn/src" "${CMAKE_BINARY_DIR}/wxl.rsdn" EXCLUDE_FROM_ALL)
+endif()
+
 # wxl.winui — проекция WinUI 3, на которой стоит Reader. Здесь, в отличие от
 # тех, что выше, берётся корневой CMakeLists модуля: он и есть весь модуль, а
 # генератор с его winmd и FetchContent живёт отдельной целью в дереве wxl и
