@@ -5,9 +5,6 @@
 		},
 		{
 			"path": "../wxl"
-		},
-		{
-			"path": "../worktrees"
 		}
 	],
 	"settings": {

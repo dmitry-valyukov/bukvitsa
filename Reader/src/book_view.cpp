@@ -1,8 +1,15 @@
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <format>
+#include <numbers>
+#include <vector>
 
+// dwrite.h первым: он приводит guiddef.h с DEFINE_GUID, без которого
+// d2d1effects.h не раскрывает CLSID эффектов.
 #include <dwrite.h>
+
+#include <d2d1effects.h>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
@@ -50,6 +57,14 @@ constexpr float kGutterOfMargin = 1.0f;
 /// горизонтальные поля: ими читатель выбирает ширину строки, а высоте полосы
 /// выбирать нечего — она и так вся, что осталось от окна.
 constexpr float kVerticalMargin = 50.0f;
+
+/// Прогиб страницы на фотографии-подложке, в DIP: насколько верхняя строка в
+/// середине страницы поднимается, а нижняя опускается. Модель — вертикальное
+/// «брюхо» выпуклой бумаги: смещение равно произведению купола по X (ноль у
+/// корешка и наружных краёв, максимум в середине каждой страницы) на глубину
+/// по Y (ноль в середине полосы, максимум у верха и низа). У корешка и краёв
+/// строки прямые — там бумага снимка прижата.
+constexpr float kBulge = 8.0f;
 
 /// На чём меряется средняя ширина знака. Не алфавит: в строке книги есть
 /// пробелы и запятые, и они тоже знаки. Обе фразы — панграммы, то есть в
@@ -521,6 +536,14 @@ void BookView::setTheme(int index) {
     note_.hide();   // подложка всплывашки покрашена прошлой темой
     root_.value().background(SolidColorBrush{ARGB{argbOf(paper().background)}});
     applyShadowTint();   // тени тоже покрашены прошлой темой
+
+    // Слой изгиба нужен только теме с подложкой, а весит как две полосы —
+    // на ровных темах он отпускается. Контекст и эффекты мелкие и остаются.
+    if (!paper().backdrop) {
+        warpLayer_.Reset();
+        warpMap_.Reset();
+        warpPixels_ = {};
+    }
     redraw();
 }
 
@@ -1571,12 +1594,134 @@ void BookView::drawBackdrop(ID2D1DeviceContext* context, float width, float heig
                         D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 }
 
+bool BookView::ensureWarp(ID2D1DeviceContext* context) {
+    const D2D1_SIZE_U pixels{static_cast<UINT32>(width_ * scale_ + 0.5f),
+                             static_cast<UINT32>(height_ * scale_ + 0.5f) * 2};
+    if (pixels.width == 0 || pixels.height == 0) return false;
+
+    if (!warpLayer_ || warpPixels_.width != pixels.width || warpPixels_.height != pixels.height) {
+        if (!warpContext_) {
+            Microsoft::WRL::ComPtr<ID2D1Device> device;
+            context->GetDevice(&device);
+            if (!device || FAILED(device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+                                                              &warpContext_)))
+                return false;
+            // Те же режимы, что redraw() ставит поверхности: слой — та же
+            // страница, только в другой битмап.
+            warpContext_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            warpContext_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+
+        warpLayer_.Reset();
+        warpMap_.Reset();
+
+        const D2D1_BITMAP_PROPERTIES1 layerProps{
+            {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED},
+            96.0f, 96.0f, D2D1_BITMAP_OPTIONS_TARGET, nullptr};
+        if (FAILED(warpContext_->CreateBitmap(pixels, nullptr, 0, &layerProps, &warpLayer_)))
+            return false;
+
+        // Карта хранит чистую форму изгиба: канал G — доля смещения по Y от
+        // размаха эффекта, 128 — «не смещать». Смещение обратное (эффект
+        // читает «откуда взять», а не «куда сдвинуть»), поэтому у верхних
+        // строк, уезжающих вверх, в карте стоит плюс — взять снизу.
+        std::vector<std::uint8_t> bytes(std::size_t{pixels.width} * pixels.height * 4);
+        std::vector<float> dome(pixels.width);
+        for (UINT32 x = 0; x < pixels.width; ++x) {
+            const float across = (static_cast<float>(x) + 0.5f) / static_cast<float>(pixels.width);
+            dome[x] = std::sin(std::numbers::pi_v<float> * std::abs(across - 0.5f) * 2.0f);
+        }
+        for (UINT32 y = 0; y < pixels.height; ++y) {
+            const float depth =
+                ((static_cast<float>(y) + 0.5f) / static_cast<float>(pixels.height) - 0.5f) * 2.0f;
+            std::uint8_t* row = &bytes[std::size_t{y} * pixels.width * 4];
+            for (UINT32 x = 0; x < pixels.width; ++x) {
+                std::uint8_t* px = row + std::size_t{x} * 4;
+                px[0] = 128;   // B — не читается
+                px[1] = static_cast<std::uint8_t>(127.5f * (1.0f - dome[x] * depth) + 0.5f);
+                px[2] = 128;   // R — канал X, нейтрально
+                px[3] = 255;
+            }
+        }
+        const D2D1_BITMAP_PROPERTIES1 mapProps{
+            {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED},
+            96.0f, 96.0f, D2D1_BITMAP_OPTIONS_NONE, nullptr};
+        if (FAILED(warpContext_->CreateBitmap(pixels, bytes.data(), pixels.width * 4, &mapProps,
+                                              &warpMap_))) {
+            warpLayer_.Reset();
+            return false;
+        }
+        warpPixels_ = pixels;
+    }
+
+    if (!warpDisplace_) {
+        warpContext_->CreateEffect(CLSID_D2D1DisplacementMap, &warpDisplace_);
+        warpContext_->CreateEffect(CLSID_D2D1Scale, &warpShrink_);
+        if (!warpDisplace_ || !warpShrink_) {
+            warpDisplace_.Reset();
+            warpShrink_.Reset();
+            return false;
+        }
+        warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_X_CHANNEL_SELECT,
+                                D2D1_CHANNEL_SELECTOR_R);
+        warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_Y_CHANNEL_SELECT,
+                                D2D1_CHANNEL_SELECTOR_G);
+        warpShrink_->SetInputEffect(0, warpDisplace_.Get());
+        warpShrink_->SetValue(D2D1_SCALE_PROP_SCALE, D2D1::Vector2F(1.0f, 0.5f));
+        warpShrink_->SetValue(D2D1_SCALE_PROP_INTERPOLATION_MODE,
+                              D2D1_SCALE_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
+    }
+
+    warpDisplace_->SetInput(0, warpLayer_.Get());
+    warpDisplace_->SetInput(1, warpMap_.Get());
+    // Размах — в пикселях слоя: прогиб kBulge DIP на экране — это kBulge·scale
+    // пикселей поверхности и вдвое больше в слое двойной высоты; ещё двойка —
+    // потому что карта отклоняется от середины не дальше половины размаха.
+    warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_SCALE, 4.0f * kBulge * scale_);
+    return true;
+}
+
 void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) {
+    context->Clear(paper().background);
+
+    // Ровные темы рисуются как прежде, напрямую. С фотографией содержимое
+    // идёт через слой изгиба: бумага на снимке выпуклая, и плоские строки
+    // на ней выглядели бы наклейкой.
+    if (!paper().backdrop) {
+        drawPageContent(context, width, height);
+        return;
+    }
+
+    drawBackdrop(context, width, height);
+    if (!ensureWarp(context)) {
+        drawPageContent(context, width, height);
+        return;
+    }
+
+    warpContext_->SetTarget(warpLayer_.Get());
+    warpContext_->BeginDraw();
+    warpContext_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+    // Вертикальная двойка растит слой, горизонтальный масштаб — тот же, что
+    // redraw() даёт поверхности: содержимое рисуется в DIP, слой — в пикселях.
+    warpContext_->SetTransform(D2D1::Matrix3x2F::Scale(scale_, scale_ * 2.0f));
+    drawPageContent(warpContext_.Get(), width, height);
+    if (FAILED(warpContext_->EndDraw())) return;   // фон с фотографией уже есть
+
+    // Выход эффектов — в пикселях поверхности, поэтому масштаб DIP→пиксели из
+    // трансформа на время вынимается: остаётся только смещение атласа.
+    D2D1_MATRIX_3X2_F outer{};
+    context->GetTransform(&outer);
+    context->SetTransform(D2D1::Matrix3x2F::Scale(1.0f / scale_, 1.0f / scale_) *
+                          *D2D1::Matrix3x2F::ReinterpretBaseType(&outer));
+    Microsoft::WRL::ComPtr<ID2D1Image> warped;
+    warpShrink_->GetOutput(&warped);
+    context->DrawImage(warped.Get());
+    context->SetTransform(*D2D1::Matrix3x2F::ReinterpretBaseType(&outer));
+}
+
+void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = paper();
     const float margin = fontSize_ * marginEms_;
-
-    context->Clear(shade.background);
-    drawBackdrop(context, width, height);
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;

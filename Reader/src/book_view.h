@@ -244,10 +244,20 @@ private:
     void drawPage(ID2D1DeviceContext* context, float width, float height);
     void drawInvitation(ID2D1DeviceContext* context, float width, float height);
 
+    /// Всё содержимое страницы — набор, картинки, средник, колонцифру — в этот
+    /// контекст. Вынесено из `drawPage`, потому что рисуется в два адреса: в
+    /// поверхность напрямую у ровных тем и в слой изгиба у темы с фотографией.
+    void drawPageContent(ID2D1DeviceContext* context, float width, float height);
+
     /// Фотография-подложка темы на всю полосу — или ничего, если темы без
     /// подложки или загрузка не удалась: тогда остаётся ровный цвет фона,
     /// которым полоса уже залита.
     void drawBackdrop(ID2D1DeviceContext* context, float width, float height);
+
+    /// Готовит слой изгиба под нынешний размер полосы: контекст, битмап-слой
+    /// двойной высоты, карту смещений и цепочку эффектов. false — изгиба не
+    /// будет, страница рисуется плоско.
+    bool ensureWarp(ID2D1DeviceContext* context);
 
     /// Цвета текущей темы. Имя не theme(): так зовётся её номер, а перегрузка
     /// по одному лишь типу возврата в C++ невозможна.
@@ -417,6 +427,19 @@ private:
     Microsoft::WRL::ComPtr<IWICFormatConverter> backdropSource_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> backdropBitmap_;
     const wchar_t* backdropLoaded_ = nullptr;
+
+    /// Изгиб страницы поверх фотографии: содержимое рисуется в слой двойной
+    /// высоты, Displacement Map гнёт его по карте, Scale ужимает по вертикали
+    /// вдвое. Двойная высота — суперсэмплинг ровно по той оси, по которой
+    /// изгиб смещает пиксели: по X передискретизации нет, и терять там нечего.
+    /// Свой контекст, а не цель поверхности на время: слою нельзя рисоваться
+    /// внутри чужого BeginDraw. Всё пересоздаётся со сменой размера полосы.
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext> warpContext_;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> warpLayer_;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> warpMap_;
+    Microsoft::WRL::ComPtr<ID2D1Effect> warpDisplace_;
+    Microsoft::WRL::ComPtr<ID2D1Effect> warpShrink_;
+    D2D1_SIZE_U warpPixels_{};
 };
 
 }  // namespace bukvitsa::reader

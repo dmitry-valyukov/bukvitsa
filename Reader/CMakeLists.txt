@@ -40,7 +40,8 @@ add_executable(Reader WIN32
 
 # bukvitsa::typography тянет за собой bukvitsa::fb3, DirectWrite и Direct2D:
 # страницу читалка рисует своими глифами, и рисует их та же вёрстка, что их
-# разложила. windowscodecs -- декодирование картинок книги (WIC).
+# разложила. windowscodecs -- декодирование картинок книги (WIC),
+# dxguid -- CLSID встроенных эффектов D2D (изгиб страницы на подложке).
 target_link_libraries(Reader PRIVATE
     wxl::winui
     wxl::async
@@ -48,6 +49,7 @@ target_link_libraries(Reader PRIVATE
     wxl::text
     bukvitsa::typography
     windowscodecs
+    dxguid
 )
 
 # wxl::xml разбирает settings.xml, а память берёт из STA-пула wxl::core --
