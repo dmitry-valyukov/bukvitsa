@@ -12,7 +12,10 @@
 #include <span>
 #include <string>
 
+#include <d2d1_1.h>
 #include <dwrite.h>
+#include <objbase.h>
+#include <wincodec.h>
 #include <wrl/client.h>
 
 import wxl.core;
@@ -20,6 +23,7 @@ import wxl.core;
 // Заголовки вёрстки после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/block.h"
+#include "bukvitsa/typography/formula.h"
 #include "bukvitsa/typography/layout.h"
 #include "bukvitsa/typography/page.h"
 
@@ -92,6 +96,119 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
 void testDraftPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                      std::uint32_t characterCount);
 void testSeparatorAtPageBottom(typography::Engine& engine);
+
+/// Формулы: MicroTeX с бэкендом Direct2D/DirectWrite. Стек проверяется
+/// насквозь — разбор, метрики и настоящая растеризация в битмап WIC: пустая
+/// картинка значила бы, что глифы или трансформации потерялись по дороге.
+void testFormulas(IDWriteFactory* dwrite) {
+    std::printf("\n=== формулы (MicroTeX) ===\n");
+
+    typography::FormulaEngine formulas(dwrite, BUKVITSA_MICROTEX_RES);
+
+    const std::unique_ptr<typography::Formula> emc =
+        formulas.parse(L"E = mc^2", 20.0f, 600.0f);
+    check(emc != nullptr, "E=mc^2 разобрана");
+    if (!emc) return;
+
+    std::printf("       ширина %.1f, высота %.1f, базовая линия %.1f\n", emc->width(),
+                emc->height(), emc->baseline());
+    check(emc->width() > 20.0f && emc->height() > 10.0f, "размеры формулы осмысленные");
+    // У E=mc^2 нет свесов под линию, поэтому линия совпадает с низом бокса.
+    check(emc->baseline() > 0.0f && emc->baseline() <= emc->height(),
+          "базовая линия внутри бокса");
+
+    const std::unique_ptr<typography::Formula> fraction = formulas.parse(
+        L"\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a} + \\int_0^\\infty e^{-x^2}\\,dx", 20.0f, 600.0f);
+    check(fraction != nullptr, "дробь с корнем и интегралом разобрана");
+    if (fraction) {
+        // А у дроби свес есть: знаменатель ниже линии, и линия строго внутри.
+        check(fraction->baseline() > 0.0f && fraction->baseline() < fraction->height(),
+              "у дроби базовая линия строго внутри бокса");
+    }
+
+    const std::unique_ptr<typography::Formula> text =
+        formulas.parse(L"m — \\text{масса тела}", 20.0f, 600.0f);
+    check(text != nullptr, "кириллица в \\text{} разобрана");
+
+    // MicroTeX разбирает частичным парсером и прощает почти всё — оборванные
+    // скобки, незнакомые команды и окружения рисуются тем, что он понял.
+    // Контракт parse: чужой мусор никогда не выходит наружу исключением.
+    bool threw = false;
+    try {
+        formulas.parse(L"\\frac{оборванная", 20.0f, 600.0f);
+        formulas.parse(L"\\nosuchcommand{x} \\begin{nosuch}y\\end{other}", 20.0f, 600.0f);
+        formulas.parse(L"}}}{{{ &&& $ \\\\", 20.0f, 600.0f);
+    } catch (...) {
+        threw = true;
+    }
+    check(!threw, "мусор не выходит наружу исключением");
+
+    // Растеризация: формула в битмап через тот же ID2D1DeviceContext, каким
+    // рисуется страница. COM уже поднят STA-пулом; парного CoUninitialize
+    // здесь нет и не должно быть — он валил бы COM под ногами остальных
+    // тестов (Packaging API у книг), и падение было ровно таким.
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
+    Microsoft::WRL::ComPtr<ID2D1Factory1> d2d;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&wic))) ||
+        FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                                 __uuidof(ID2D1Factory1), nullptr, &d2d))) {
+        check(false, "фабрики WIC и Direct2D");
+        return;
+    }
+
+    const UINT width = static_cast<UINT>(emc->width()) + 8;
+    const UINT height = static_cast<UINT>(emc->height()) + 8;
+    Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
+    wic->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand,
+                      &bitmap);
+
+    Microsoft::WRL::ComPtr<ID2D1RenderTarget> target;
+    const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    if (FAILED(d2d->CreateWicBitmapRenderTarget(bitmap.Get(), properties, &target))) {
+        check(false, "цель отрисовки поверх WIC");
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext> context;
+    target.As(&context);
+
+    context->BeginDraw();
+    context->Clear(D2D1::ColorF(D2D1::ColorF::White));
+    emc->draw(context.Get(), 4.0f, 4.0f);
+    check(SUCCEEDED(context->EndDraw()), "отрисовка завершилась");
+
+    // Не белые пиксели — доказательство, что глифы дошли до битмапа.
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
+    bitmap->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data());
+    std::size_t inked = 0;
+    for (std::size_t i = 0; i < pixels.size(); i += 4) {
+        if (pixels[i] != 0xFF || pixels[i + 1] != 0xFF || pixels[i + 2] != 0xFF) ++inked;
+    }
+    std::printf("       закрашено пикселей: %zu из %u\n", inked, width * height);
+    check(inked > 50, "формула оставила след на битмапе");
+
+    // Диагностический крючок: снимок битмапа в PNG, когда просят глазами.
+    if (const char* shot = std::getenv("BUKVITSA_FORMULA_SHOT")) {
+        Microsoft::WRL::ComPtr<IWICStream> stream;
+        Microsoft::WRL::ComPtr<IWICBitmapEncoder> encoder;
+        Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> frame;
+        wic->CreateStream(&stream);
+        std::wstring wide(shot, shot + std::strlen(shot));
+        if (SUCCEEDED(stream->InitializeFromFilename(wide.c_str(), GENERIC_WRITE)) &&
+            SUCCEEDED(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+            SUCCEEDED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)) &&
+            SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) && SUCCEEDED(frame->Initialize(nullptr)) &&
+            SUCCEEDED(frame->WriteSource(bitmap.Get(), nullptr)) && SUCCEEDED(frame->Commit()) &&
+            SUCCEEDED(encoder->Commit())) {
+            std::printf("       снимок: %s\n", shot);
+        }
+    }
+}
 
 void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     std::printf("\n=== %s ===\n", path.filename().string().c_str());
@@ -692,6 +809,10 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
 }  // namespace
 
 int main() {
+    // Без буфера: тест, упавший в глубине COM или чужого кода, обязан
+    // оставить на экране всё, что успел сказать, — иначе падение немое.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     wxl::core::sta_memory_pool pool;
 
     Microsoft::WRL::ComPtr<IDWriteFactory> dwrite;
@@ -703,6 +824,7 @@ int main() {
 
     typography::Engine engine(dwrite.Get());
 
+    testFormulas(dwrite.Get());
     testSeparatorAtPageBottom(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};

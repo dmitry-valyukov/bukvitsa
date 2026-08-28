@@ -2,6 +2,7 @@ add_library(bukvitsa_typography STATIC
     src/flatten.cpp
     src/linebreak.cpp
     src/engine.cpp
+    src/formula.cpp
     src/glyph_painter.cpp
     src/paginator.cpp
     src/typography.cpp
@@ -16,6 +17,10 @@ target_link_libraries(bukvitsa_typography PUBLIC bukvitsa::fb3)
 
 # wxl::text — только внутри: обход кодовых точек книги при развороте в блоки.
 target_link_libraries(bukvitsa_typography PRIVATE wxl::text)
+
+# MicroTeX — только внутри: наружу formula.h отдаёт Formula и FormulaEngine,
+# ни одного имени tex:: в публичных заголовках нет.
+target_link_libraries(bukvitsa_typography PRIVATE bukvitsa::microtex)
 bukvitsa_consumes_wxl(bukvitsa_typography)
 if(WIN32)
     target_link_libraries(bukvitsa_typography PUBLIC dwrite d2d1)

@@ -167,6 +167,11 @@ function(bukvitsa_consumes_wxl target)
     )
 endfunction()
 
+# Вендоренные зависимости — до /W4 и определений ниже по той же причине, по
+# которой их не получает wxl: чужой код с чужими предупреждениями. Сейчас тут
+# MicroTeX (движок формул) с tinyxml2 внутри, см. external/README.md.
+add_subdirectory(external)
+
 # Своё Буквицы — строго после подключения wxl, в отличие от ключей языка выше.
 # Определения: у wxl свои NOMINMAX и WIN32_LEAN_AND_MEAN в platform.h, и наши
 # дали бы C4005 на каждом её файле. /W4: предупреждения wxl — её дело, и в

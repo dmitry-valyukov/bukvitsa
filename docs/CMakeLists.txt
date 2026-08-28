@@ -82,6 +82,11 @@ wxl_add_doxygen_site(docs
         "*/tests/*"
         "*/testdata/*"
         "*/demo/*"
+        # Бэкенд MicroTeX: определяет члены tex::Font и других чужих классов,
+        # объявлений которых Doxygen не видит (external/ в INPUT не входит) и
+        # честно считает это ошибкой. Публичная грань формул — formula.h — в
+        # сайте остаётся.
+        "*/Typography/src/formula.cpp"
 )
 
 if(BUKVITSA_BUILD_TESTS)
