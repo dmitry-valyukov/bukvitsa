@@ -244,6 +244,11 @@ private:
     void drawPage(ID2D1DeviceContext* context, float width, float height);
     void drawInvitation(ID2D1DeviceContext* context, float width, float height);
 
+    /// Фотография-подложка темы на всю полосу — или ничего, если темы без
+    /// подложки или загрузка не удалась: тогда остаётся ровный цвет фона,
+    /// которым полоса уже залита.
+    void drawBackdrop(ID2D1DeviceContext* context, float width, float height);
+
     /// Цвета текущей темы. Имя не theme(): так зовётся её номер, а перегрузка
     /// по одному лишь типу возврата в C++ невозможна.
     const Theme& paper() const { return kThemes[theme_]; }
@@ -404,6 +409,14 @@ private:
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> statusFormat_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> invitationFormat_;
+
+    /// Подложка темы на пути от файла к экрану — та же пара, что у картинок
+    /// книги: раскодированная фотография и её битмап на устройстве, встающий
+    /// при первой отрисовке. Чья она, помнит `backdropLoaded_` — это путь из
+    /// темы, и смена темы на другую подложку сбрасывает обе ступени.
+    Microsoft::WRL::ComPtr<IWICFormatConverter> backdropSource_;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> backdropBitmap_;
+    const wchar_t* backdropLoaded_ = nullptr;
 };
 
 }  // namespace bukvitsa::reader

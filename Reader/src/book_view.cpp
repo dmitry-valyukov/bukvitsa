@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <filesystem>
 #include <format>
 
 #include <dwrite.h>
@@ -191,6 +192,41 @@ bool controlHeld() {
     // Клавиатурные модификаторы у KeyRoutedEventArgs не спросить: WinUI их там
     // не отдаёт. Состояние клавиши знает Win32, и вопрос к нему — один вызов.
     return (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+}
+
+/// Раскодирует фотографию-подложку темы. Путь в теме — от исполняемого файла,
+/// как и у остальных ресурсов из Assets, поэтому он достраивается от модуля,
+/// а не от текущего каталога: тот зависит от того, откуда читалку запустили.
+/// Фабрика WIC своя и на один вызов: подложка загружается при смене темы, а
+/// не в цикле, и держать фабрику ради этого незачем.
+Microsoft::WRL::ComPtr<IWICFormatConverter> decodeBackdrop(const wchar_t* relative) {
+    using Microsoft::WRL::ComPtr;
+
+    wchar_t module[MAX_PATH];
+    if (::GetModuleFileNameW(nullptr, module, MAX_PATH) == 0) return nullptr;
+    const std::filesystem::path path = std::filesystem::path(module).parent_path() / relative;
+
+    ComPtr<IWICImagingFactory> wic;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&wic))))
+        return nullptr;
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                              WICDecodeMetadataCacheOnLoad, &decoder)))
+        return nullptr;
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(0, &frame))) return nullptr;
+
+    ComPtr<IWICFormatConverter> converter;
+    if (FAILED(wic->CreateFormatConverter(&converter))) return nullptr;
+    if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                                     WICBitmapDitherTypeNone, nullptr, 0.0,
+                                     WICBitmapPaletteTypeMedianCut)))
+        return nullptr;
+
+    return converter;
 }
 
 }  // namespace
@@ -1510,11 +1546,37 @@ const fb3::Node* BookView::noteAt(Point point, Point& anchor) const {
     return nullptr;
 }
 
+void BookView::drawBackdrop(ID2D1DeviceContext* context, float width, float height) {
+    const wchar_t* const wanted = paper().backdrop;
+    if (!wanted) return;
+
+    if (backdropLoaded_ != wanted) {
+        backdropSource_ = decodeBackdrop(wanted);
+        backdropBitmap_.Reset();
+        backdropLoaded_ = wanted;
+    }
+
+    if (!backdropBitmap_ && backdropSource_) {
+        if (FAILED(context->CreateBitmapFromWicBitmap(backdropSource_.Get(), nullptr,
+                                                      &backdropBitmap_)))
+            backdropSource_.Reset();   // не вышло — больше не пытаемся
+    }
+
+    if (!backdropBitmap_) return;
+
+    // На всю полосу, без сохранения пропорций: снимок скомпонован под полосу —
+    // книга в середине, стол по краям, — и кадрирование ради пропорций резало
+    // бы именно книгу. Растяжение бумажной фактуры глаз не ловит.
+    context->DrawBitmap(backdropBitmap_.Get(), D2D1::RectF(0.0f, 0.0f, width, height), 1.0f,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+}
+
 void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = paper();
     const float margin = fontSize_ * marginEms_;
 
     context->Clear(shade.background);
+    drawBackdrop(context, width, height);
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;
@@ -1628,6 +1690,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
 void BookView::drawInvitation(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = paper();
     context->Clear(shade.background);
+    drawBackdrop(context, width, height);
 
     IDWriteFactory* const dwrite = dwriteFactory();
     if (!dwrite) return;
