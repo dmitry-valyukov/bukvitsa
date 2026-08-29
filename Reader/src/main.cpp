@@ -66,10 +66,11 @@ constexpr auto kSaveQuiet = 800ms;
 // То же для места чтения: страницы листают подряд, а файл на книгу один.
 constexpr auto kPositionQuiet = 1500ms;
 
-// Что сейчас в окне. Четыре экрана, и переход между ними — присваивание
+// Что сейчас в окне. Три экрана, и переход между ними — присваивание
 // содержимого; перечисление нужно только затем, чтобы Escape знал, куда
-// возвращать. Из мастера обложек выводит его собственная кнопка.
-enum class Screen { Start, Library, Book, Wizard };
+// возвращать. Мастер обложек — не экран, а оверлей поверх полосы: под ним
+// читатель видит свою страницу, изогнутую редактируемыми кривыми.
+enum class Screen { Start, Library, Book };
 
 // ---- то, из чего собрано приложение ---------------------------------------
 //
@@ -211,22 +212,27 @@ task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
                   std::function<void()> leaveWizard) {
     Io& io = *app.io;
 
-    const std::optional<std::string> bytes = co_await io.readFile(photo);
+    // У правки старой обложки копия снимка уже лежит в skins\ — скопировать
+    // надо только новый. Имя копии — новый guid с родным расширением: имена
+    // обложек выбирает читатель и они могут повторить друг друга, а guid —
+    // нет.
+    if (skin.image.empty()) {
+        const std::optional<std::string> bytes = co_await io.readFile(photo);
 
-    if (!bytes) {
-        ::MessageBoxW(window_handle(app.window),
-                      (L"Не удалось прочитать снимок:\n" + photo.wstring()).c_str(), L"Буквица",
-                      MB_OK | MB_ICONWARNING);
-        co_return;
+        if (!bytes) {
+            ::MessageBoxW(window_handle(app.window),
+                          (L"Не удалось прочитать снимок:\n" + photo.wstring()).c_str(),
+                          L"Буквица", MB_OK | MB_ICONWARNING);
+            co_return;
+        }
+
+        std::wstring file = newGuid() + photo.extension().wstring();
+
+        co_await io.writeFile(skinDirectory() / file, std::move(*bytes));
+
+        skin.image = std::move(file);
     }
 
-    // Имя копии — новый guid с родным расширением: имена обложек выбирает
-    // читатель и они могут повторить друг друга, а guid — нет.
-    std::wstring file = newGuid() + photo.extension().wstring();
-
-    co_await io.writeFile(skinDirectory() / file, std::move(*bytes));
-
-    skin.image = std::move(file);
     const std::wstring skinName = skin.name;
     app.skins->put(std::move(skin));
 
@@ -611,17 +617,21 @@ wxl::Teardown wxl_launched() {
 
     // ---- мастер обложек ----
     //
-    // Четвёртый экран окна. Дорога туда одна — кнопка в панели «Вид», дорога
-    // обратно — его собственные кнопки; Escape мастером не занимается.
-    auto wizardCameFrom = std::make_shared<Screen>(Screen::Book);
+    // Оверлей поверх полосы: под сеткой мастера читатель видит свою страницу,
+    // изогнутую редактируемыми кривыми. Дорога туда — кнопки в панели «Вид»,
+    // дорога обратно — его собственные кнопки; Escape мастером не занимается.
+    view->addOverlay(wizard->root());
 
-    auto const leaveWizard = [window, view, shelf, screen, shown, wizardCameFrom] {
-        *shown = *wizardCameFrom;
-        switch (*shown) {
-            case Screen::Book: window.content(view->root()); break;
-            case Screen::Library: window.content(shelf->root()); break;
-            default: window.content(screen->root()); break;
-        }
+    // Предпросмотр: полоса рисуется со снимком и кривыми мастера. Он же —
+    // пересчёт после отпускания точки.
+    auto const previewSkin = [view, wizard] {
+        view->setPreview(&wizard->skin(), wizard->imagePath());
+    };
+
+    auto const leaveWizard = [view, wizard] {
+        wizard->hide();
+        view->setPreview(nullptr, {});
+        view->root().focus(FocusState::Programmatic);
     };
 
     auto const badImage = [window](std::filesystem::path const& path) {
@@ -630,29 +640,49 @@ wxl::Teardown wxl_launched() {
                       MB_OK | MB_ICONWARNING);
     };
 
-    panel->onAddSkin = [window, wizard, shown, wizardCameFrom, closePanel, badImage] {
+    panel->onAddSkin = [window, wizard, closePanel, badImage, previewSkin] {
         std::filesystem::path const path = askForImage(window_handle(window));
 
         if (path.empty()) return;
 
-        if (!wizard->open(path)) {
+        if (!wizard->openNew(path)) {
             badImage(path);
             return;
         }
 
         closePanel();
-        *wizardCameFrom = *shown;
-        *shown = Screen::Wizard;
-        window.content(wizard->root());
+        wizard->show();
+        previewSkin();
     };
 
-    wizard->onChooseAnother = [window, wizard, badImage] {
+    panel->onEditSkin = [window, wizard, skins, closePanel, badImage,
+                         previewSkin](std::wstring skinName) {
+        const Skin* known = skins->find(skinName);
+        if (!known) return;   // реестр успел перемениться под руками
+
+        if (!wizard->openEdit(*known)) {
+            badImage(skinDirectory() / known->image);
+            return;
+        }
+
+        closePanel();
+        wizard->show();
+        previewSkin();
+    };
+
+    wizard->onCurvesChanged = previewSkin;
+
+    wizard->onChooseAnother = [window, wizard, badImage, previewSkin] {
         std::filesystem::path const path = askForImage(window_handle(window));
 
         // Отказался — остаёмся на прежнем снимке: читатель ничего не терял.
         if (path.empty()) return;
 
-        if (!wizard->open(path)) badImage(path);
+        if (!wizard->openNew(path)) {
+            badImage(path);
+            return;
+        }
+        previewSkin();
     };
 
     wizard->onExit = leaveWizard;
@@ -688,9 +718,13 @@ wxl::Teardown wxl_launched() {
     };
 
     auto const installKeys = [setFullScreen, isFullScreen, shown, bookCameFrom, showStartScreen,
-                              showLibrary, panel, view](UIElement const& element) {
+                              showLibrary, panel, view, wizard](UIElement const& element) {
         element.add_onPreviewKeyDown([=](Object const&, KeyRoutedEventArgs& args) {
             if (args.handled()) return;   // полоса набора своё уже разобрала
+
+            // Пока открыт мастер обложек, клавиши экранов молчат: Escape увёл
+            // бы с полосы прямо под ним. Дороги из мастера — его кнопки.
+            if (wizard->isOpen()) return;
 
             // Панель — только над книгой: над заставкой ей нечего показывать.
             bool const reading = *shown == Screen::Book;

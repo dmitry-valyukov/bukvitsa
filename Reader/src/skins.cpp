@@ -10,53 +10,78 @@
 
 namespace bukvitsa::reader {
 
+namespace {
+
+/// Кривая с точками на прямой: равномерно от `from` до `to` по X, все на
+/// одной высоте `level`.
+EdgeCurve straightCurve(float from, float to, float level) {
+    EdgeCurve curve;
+
+    const float step = (to - from) / (EdgeCurve::kPoints - 1);
+    for (int index = 0; index < EdgeCurve::kPoints; ++index) {
+        curve.x[static_cast<std::size_t>(index)] = from + step * static_cast<float>(index);
+        curve.y[static_cast<std::size_t>(index)] = level;
+    }
+    return curve;
+}
+
+/// Разбирает одну кривую из дочерних <point>. Чего в файле нет или что
+/// вылезло из долей — остаётся от начальной прямой: файл могли поправить
+/// руками, и это не повод ронять обложку.
+EdgeCurve curveOf(const wxl::xml::node& element, EdgeCurve fallback) {
+    EdgeCurve curve = fallback;
+
+    std::size_t index = 0;
+    for (const wxl::xml::node& point : element.children_named("point")) {
+        if (index >= static_cast<std::size_t>(EdgeCurve::kPoints)) break;
+        curve.x[index] =
+            std::clamp(static_cast<float>(realOf(point, "x", curve.x[index])), 0.0f, 1.0f);
+        curve.y[index] =
+            std::clamp(static_cast<float>(realOf(point, "y", curve.y[index])), 0.0f, 1.0f);
+        ++index;
+    }
+    return curve;
+}
+
+void writeCurve(wxl::text::text_builder<>& out, const char* name, const EdgeCurve& curve) {
+    out.format("    <{}>\n", name);
+    for (std::size_t index = 0; index < static_cast<std::size_t>(EdgeCurve::kPoints); ++index) {
+        out.format("      <point x=\"{}\" y=\"{}\"/>\n", curve.x[index], curve.y[index]);
+    }
+    out.format("    </{}>\n", name);
+}
+
+}  // namespace
+
 Skin defaultSkin() {
     Skin skin;
 
-    constexpr float step = (1.0f - 2.0f * kEdgeInset) / (Skin::kPoints - 1);
-    for (int index = 0; index < Skin::kPoints; ++index) {
-        skin.x[static_cast<std::size_t>(index)] = kEdgeInset + step * static_cast<float>(index);
-        skin.top[static_cast<std::size_t>(index)] = kEdgeInset;
-        skin.bottom[static_cast<std::size_t>(index)] = 1.0f - kEdgeInset;
-    }
+    skin.topLeft = straightCurve(kEdgeInset, 0.5f - kEdgeInset, kEdgeInset);
+    skin.topRight = straightCurve(0.5f + kEdgeInset, 1.0f - kEdgeInset, kEdgeInset);
+    skin.bottomLeft = straightCurve(kEdgeInset, 0.5f - kEdgeInset, 1.0f - kEdgeInset);
+    skin.bottomRight = straightCurve(0.5f + kEdgeInset, 1.0f - kEdgeInset, 1.0f - kEdgeInset);
     return skin;
 }
 
-std::vector<float> sampleEdge(std::span<const float> xs, std::span<const float> ys, int columns) {
-    std::vector<float> out(static_cast<std::size_t>(columns));
-    const std::size_t last = xs.size() - 1;
+float edgeAt(const EdgeCurve& curve, float u) {
+    constexpr std::size_t last = static_cast<std::size_t>(EdgeCurve::kPoints) - 1;
 
-    // Колонки идут по возрастанию, поэтому сегмент только движется вперёд и
-    // весь проход линейный.
+    if (u <= curve.x[0]) return curve.y[0];
+    if (u >= curve.x[last]) return curve.y[last];
+
     std::size_t segment = 0;
+    while (u > curve.x[segment + 1]) ++segment;
 
-    for (int column = 0; column < columns; ++column) {
-        const float u = (static_cast<float>(column) + 0.5f) / static_cast<float>(columns);
-        float value;
+    // Катмулл-Ром по четвёрке соседей; у крайних сегментов сосед за краем —
+    // сама крайняя точка, обычное «зажатие» концов.
+    const float t = (u - curve.x[segment]) / (curve.x[segment + 1] - curve.x[segment]);
+    const float p0 = curve.y[segment == 0 ? 0 : segment - 1];
+    const float p1 = curve.y[segment];
+    const float p2 = curve.y[segment + 1];
+    const float p3 = curve.y[std::min(segment + 2, last)];
 
-        if (u <= xs[0]) {
-            value = ys[0];
-        } else if (u >= xs[last]) {
-            value = ys[last];
-        } else {
-            while (u > xs[segment + 1]) ++segment;
-
-            // Катмулл-Ром по четвёрке соседей; у крайних сегментов сосед за
-            // краем — сама крайняя точка, обычное «зажатие» концов.
-            const float t = (u - xs[segment]) / (xs[segment + 1] - xs[segment]);
-            const float p0 = ys[segment == 0 ? 0 : segment - 1];
-            const float p1 = ys[segment];
-            const float p2 = ys[segment + 1];
-            const float p3 = ys[std::min(segment + 2, last)];
-
-            value = 0.5f * (2.0f * p1 + (-p0 + p2) * t +
-                            (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t * t +
-                            (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t * t * t);
-        }
-
-        out[static_cast<std::size_t>(column)] = value;
-    }
-    return out;
+    return 0.5f * (2.0f * p1 + (-p0 + p2) * t + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t * t +
+                   (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t * t * t);
 }
 
 void Skins::loadFrom(std::string xml) {
@@ -73,19 +98,14 @@ void Skins::loadFrom(std::string xml) {
             skin.name = attributeOf(element, "name");
             skin.image = attributeOf(element, "image");
 
-            // Все координаты — доли, и файл могли поправить руками: значение
-            // вне [0, 1] прижимается, а не роняет обложку.
-            std::size_t index = 0;
-            for (const wxl::xml::node& line : element.children_named("line")) {
-                if (index >= static_cast<std::size_t>(Skin::kPoints)) break;
-                skin.x[index] =
-                    std::clamp(static_cast<float>(realOf(line, "x", skin.x[index])), 0.0f, 1.0f);
-                skin.top[index] = std::clamp(
-                    static_cast<float>(realOf(line, "top", skin.top[index])), 0.0f, 1.0f);
-                skin.bottom[index] = std::clamp(
-                    static_cast<float>(realOf(line, "bottom", skin.bottom[index])), 0.0f, 1.0f);
-                ++index;
-            }
+            if (const wxl::xml::node* curve = element.child("topLeft"))
+                skin.topLeft = curveOf(*curve, skin.topLeft);
+            if (const wxl::xml::node* curve = element.child("topRight"))
+                skin.topRight = curveOf(*curve, skin.topRight);
+            if (const wxl::xml::node* curve = element.child("bottomLeft"))
+                skin.bottomLeft = curveOf(*curve, skin.bottomLeft);
+            if (const wxl::xml::node* curve = element.child("bottomRight"))
+                skin.bottomRight = curveOf(*curve, skin.bottomRight);
 
             // Обложка без имени не выбирается, без снимка не рисуется; такого
             // в файле, который писали мы, не бывает — но файл могли и
@@ -108,10 +128,10 @@ std::string Skins::toXml() const {
     for (const Skin& skin : skins_) {
         out.format("  <skin name=\"{}\" image=\"{}\">\n", xmlValue(skin.name),
                    xmlValue(skin.image));
-        for (std::size_t index = 0; index < static_cast<std::size_t>(Skin::kPoints); ++index) {
-            out.format("    <line x=\"{}\" top=\"{}\" bottom=\"{}\"/>\n", skin.x[index],
-                       skin.top[index], skin.bottom[index]);
-        }
+        writeCurve(out, "topLeft", skin.topLeft);
+        writeCurve(out, "topRight", skin.topRight);
+        writeCurve(out, "bottomLeft", skin.bottomLeft);
+        writeCurve(out, "bottomRight", skin.bottomRight);
         out.append("  </skin>\n");
     }
 

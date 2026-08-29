@@ -515,13 +515,36 @@ void ReaderPanel::refreshThemes() {
     themesPanel_.value().children().append(builtins);
 
     // Обложки — по строке на каждую: имя даёт читатель, и в строчку они не
-    // помещаются.
+    // помещаются. Рядом с каждой — шестерёнка: обложку не только выбирают,
+    // но и правят, и дорога к правке стоит у самой обложки.
     const std::vector<Skin>& skins = view_.skins();
     for (std::size_t index = 0; index < skins.size(); ++index) {
         auto button = themeButton(skins[index].name, kThemeCount + static_cast<int>(index),
                                   Thickness{0, 6, 0, 0});
         themeButtons_.push_back(button);
-        themesPanel_.value().children().append(button);
+
+        auto gear = Button{
+            L"",   // шестерёнка Segoe Fluent Icons
+            fontFamily = FontFamily{L"Segoe Fluent Icons"},
+            fontSize = 13,
+            Margin{6, 6, 0, 0},
+            Padding{8, 6},
+            foreground = SolidColorBrush{ARGB{kDim}},
+            background = SolidColorBrush{ARGB{0x00000000}},
+            borderBrush = SolidColorBrush{ARGB{kEdge}},
+            BorderThickness{1},
+            CornerRadius{4},
+            onClick =
+                [this, name = skins[index].name](Object const&, RoutedEventArgs&) {
+                    if (onEditSkin) onEditSkin(name);
+                },
+        };
+
+        themesPanel_.value().children().append(StackPanel{
+            Orientation::Horizontal,
+            button,
+            gear,
+        });
     }
 
     // Дорога в мастер — последней строкой, после всех тем.

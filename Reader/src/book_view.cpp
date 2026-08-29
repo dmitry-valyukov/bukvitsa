@@ -367,6 +367,7 @@ Grid BookView::buildTree() {
     });
 
     tree.add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
+        if (preview_) return;   // поверх полосы лежит мастер — листать нечего
         switch (args.key()) {
             case VirtualKey::PageDown:
             case VirtualKey::Right:
@@ -410,6 +411,7 @@ Grid BookView::buildTree() {
     });
 
     tree.add_onPointerWheelChanged([this](Object const&, PointerRoutedEventArgs& args) {
+        if (preview_) return;   // поверх полосы лежит мастер
         const int delta = args.getCurrentPoint(root_.value()).properties().mouseWheelDelta();
         const bool control = (static_cast<uint32_t>(args.keyModifiers()) &
                               static_cast<uint32_t>(VirtualKeyModifiers::Control)) != 0;
@@ -423,6 +425,7 @@ Grid BookView::buildTree() {
     });
 
     tree.add_onPointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
+        if (preview_) return;   // поверх полосы лежит мастер
         const PointerPoint touch = args.getCurrentPoint(root_.value());
         const Point point = touch.position();
         root_.value().focus(FocusState::Programmatic);
@@ -539,7 +542,23 @@ const Skin* BookView::activeSkin() const {
     return &skins_[static_cast<std::size_t>(theme_ - kThemeCount)];
 }
 
+void BookView::setPreview(const Skin* skin, const std::filesystem::path& image) {
+    if (skin) {
+        preview_ = *skin;
+        previewImage_ = image;
+    } else {
+        preview_.reset();
+        previewImage_.clear();
+    }
+
+    // Карта держит форму прежних кривых, а подложка — прежний снимок.
+    warpMap_.Reset();
+    warpFlat_ = false;
+    redraw();
+}
+
 std::filesystem::path BookView::backdropFile() const {
+    if (preview_) return previewImage_;
     if (const Skin* skin = activeSkin()) return skinDirectory() / skin->image;
     if (paper().backdrop) return exeDirectory() / paper().backdrop;
     return {};
@@ -1631,16 +1650,25 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
         // Отклонения краёв от их прямых начальных линий, в долях высоты
         // полосы, по значению на столбец карты. Встроенная тема — идеализация:
         // купол синуса, вверх у верхнего края и вниз у нижнего. У обложки
-        // вместо синуса — кривые, снятые мастером с самого снимка.
+        // вместо синуса — четыре кривые, снятые мастером с самого снимка:
+        // у каждой границы каждого листа изгиб свой, и середина разворота —
+        // граница между левой парой и правой.
         const int columns = static_cast<int>(pixels.width);
         std::vector<float> topEdge;
         std::vector<float> bottomEdge;
 
-        if (const Skin* skin = activeSkin()) {
-            topEdge = sampleEdge(skin->x, skin->top, columns);
-            bottomEdge = sampleEdge(skin->x, skin->bottom, columns);
-            for (float& value : topEdge) value -= kEdgeInset;
-            for (float& value : bottomEdge) value -= 1.0f - kEdgeInset;
+        if (const Skin* skin = preview_ ? &*preview_ : activeSkin()) {
+            topEdge.resize(static_cast<std::size_t>(columns));
+            bottomEdge.resize(static_cast<std::size_t>(columns));
+            for (int x = 0; x < columns; ++x) {
+                const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
+                const bool left = u < 0.5f;
+                topEdge[static_cast<std::size_t>(x)] =
+                    edgeAt(left ? skin->topLeft : skin->topRight, u) - kEdgeInset;
+                bottomEdge[static_cast<std::size_t>(x)] =
+                    edgeAt(left ? skin->bottomLeft : skin->bottomRight, u) -
+                    (1.0f - kEdgeInset);
+            }
         } else {
             topEdge.resize(static_cast<std::size_t>(columns));
             bottomEdge.resize(static_cast<std::size_t>(columns));

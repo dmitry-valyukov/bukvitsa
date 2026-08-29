@@ -95,6 +95,12 @@ public:
     /// Обложка, если текущая тема — обложка; для встроенных тем nullptr.
     const Skin* activeSkin() const;
 
+    /// Предпросмотр обложки для мастера: пока он задан, полоса рисуется с
+    /// этим снимком и этими кривыми вместо темы, а собственный ввод полосы
+    /// выключен — поверх лежит мастер, и листать под ним нечего. Каждый
+    /// вызов пересобирает карту изгиба; nullptr снимает предпросмотр.
+    void setPreview(const Skin* skin, const std::filesystem::path& image);
+
     void setFontSize(float size);
     float fontSize() const { return fontSize_; }
 
@@ -275,6 +281,7 @@ private:
     /// встроенной темы с фотографией — мастер задаёт снимок и кривые, а не
     /// цвета.
     const Theme& paper() const {
+        if (preview_) return kThemes[kAntiqueTheme];
         return kThemes[theme_ < kThemeCount ? theme_ : kAntiqueTheme];
     }
 
@@ -430,6 +437,11 @@ private:
 
     int theme_ = 0;
     std::vector<Skin> skins_;
+
+    /// Обложка предпросмотра и её снимок — см. setPreview().
+    std::optional<Skin> preview_;
+    std::filesystem::path previewImage_;
+
     float fontSize_ = 20.0f;
     float lineHeight_ = 1.45f;
     float marginEms_ = 3.0f;

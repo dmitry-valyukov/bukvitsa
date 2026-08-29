@@ -27,23 +27,28 @@ constexpr uint32_t kInk = 0xFFE8E4DC;
 constexpr uint32_t kEdge = 0x33FFFFFF;
 
 // Кнопки — как на стартовом экране: та же ширина, та же полупрозрачность,
-// под ними должен просвечивать снимок.
+// под ними должна просвечивать страница.
 constexpr float kButtonWidth = 300.0f;
 constexpr float kRestingOpacity = 0.92f;
 
-// Оверлей поверх снимка. Вертикали тихие, кривые — тёплый акцент: их видно и
-// на светлой бумаге, и на тёмном столе, и они — то, ради чего мастер открыт.
-constexpr D2D1_COLOR_F kLineColor{1.0f, 1.0f, 1.0f, 0.35f};
+// Сетка поверх страницы. Кривые — тёплый акцент: их видно и на светлой
+// бумаге, и на тёмном столе. Кружочки полупрозрачны, как кнопки: под ними
+// тоже должна просвечивать страница.
 constexpr D2D1_COLOR_F kCurveColor{1.0f, 0.72f, 0.30f, 0.9f};
-constexpr D2D1_COLOR_F kGripFill{1.0f, 1.0f, 1.0f, 0.95f};
-constexpr D2D1_COLOR_F kGripRing{0.15f, 0.12f, 0.08f, 0.9f};
-
-// Фон до того, как снимок раскодировался, — тёмное дерево стола.
-constexpr D2D1_COLOR_F kVoid{0.08f, 0.05f, 0.02f, 1.0f};
+constexpr D2D1_COLOR_F kGripFill{1.0f, 1.0f, 1.0f, 0.55f};
+constexpr D2D1_COLOR_F kGripRing{0.15f, 0.12f, 0.08f, 0.7f};
 
 constexpr float kGripRadius = 7.0f;   ///< рисуемый кружочек, DIP
 constexpr float kGripReach = 12.0f;   ///< зона захвата: шире кружочка, промах злит
 constexpr float kCurveStep = 4.0f;    ///< шаг ломаной, которой рисуется кривая
+
+/// Ближе этого точкам одной кривой не сойтись: кривой нужен ход X между
+/// соседями, иначе сегмент вырождается.
+constexpr float kMinGap = 0.02f;
+
+/// Сколько линий-подсказок между верхней и нижней кривыми листа, считая их
+/// самих.
+constexpr int kGuideRows = 9;
 
 /// Пусто ли имя — пробелы не в счёт.
 bool blank(std::wstring_view text) {
@@ -54,8 +59,20 @@ bool blank(std::wstring_view text) {
 }  // namespace
 
 SkinWizard::SkinWizard(const Compositor& compositor) : compositor_(compositor) {
-    baseX_ = skin_.x;
     buildTree();
+}
+
+EdgeCurve& SkinWizard::curve(int index) {
+    switch (index) {
+        case 0: return skin_.topLeft;
+        case 1: return skin_.topRight;
+        case 2: return skin_.bottomLeft;
+        default: return skin_.bottomRight;
+    }
+}
+
+const EdgeCurve& SkinWizard::curve(int index) const {
+    return const_cast<SkinWizard*>(this)->curve(index);
 }
 
 Button SkinWizard::overlayButton(std::wstring_view caption, void (SkinWizard::*handler)()) {
@@ -132,16 +149,14 @@ void SkinWizard::buildTree() {
 
     auto tree = Grid{
         isTabStop = true,
-        background = SolidColorBrush{ARGB{0xFF140D06}},
+        visibility = Visibility::Collapsed,
+        // Прозрачная, но настоящая кисть: без неё оверлей не участвует в
+        // проверке попадания, и тянуть точки было бы не за что.
+        background = SolidColorBrush{ARGB{0x00000000}},
         surfaceHost_.value(),
         Columns{Grid{}, buttons},
         namePanel_.value(),
     };
-
-    tree.add_onLoaded([this](Object const&, RoutedEventArgs&) {
-        root_.value().focus(FocusState::Programmatic);
-        if (resizeSurface()) redraw();
-    });
 
     tree.add_onSizeChanged([this](Object const&, SizeChangedEventArgs&) {
         // Координаты в долях, поэтому смена размеров ничего не двигает по
@@ -153,81 +168,107 @@ void SkinWizard::buildTree() {
         const PointerPoint touch = args.getCurrentPoint(root_.value());
         if (!touch.properties().isLeftButtonPressed()) return;
 
-        std::size_t index = 0;
-        const Grip grip = gripAt(touch.position(), index);
-        if (grip == Grip::None) return;
+        int curveIndex = 0;
+        std::size_t pointIndex = 0;
+        if (!gripAt(touch.position(), curveIndex, pointIndex)) return;
 
-        drag_ = grip;
-        dragIndex_ = index;
+        dragging_ = true;
+        dragCurve_ = curveIndex;
+        dragPoint_ = pointIndex;
         args.handled(true);
     });
 
     tree.add_onPointerMoved([this](Object const&, PointerRoutedEventArgs& args) {
         const Point point = args.getCurrentPoint(root_.value()).position();
 
-        Grip active = drag_;
-        if (drag_ != Grip::None) {
-            const std::size_t index = dragIndex_;
+        bool overGrip = dragging_;
+        if (dragging_) {
+            EdgeCurve& edited = curve(dragCurve_);
+            const std::size_t at = dragPoint_;
+            constexpr std::size_t last = static_cast<std::size_t>(EdgeCurve::kPoints) - 1;
 
-            // Каждая точка ходит строго по своей оси и в своих пределах:
-            // края — по вертикали не дальше четверти высоты от кромки,
-            // вертикали — вбок от начального места, не дотягиваясь до соседок.
-            switch (drag_) {
-                case Grip::Top:
-                    skin_.top[index] = std::clamp(point.y / height_, 0.0f, kEdgeReach);
-                    break;
-                case Grip::Bottom:
-                    skin_.bottom[index] =
-                        std::clamp(point.y / height_, 1.0f - kEdgeReach, 1.0f);
-                    break;
-                case Grip::Line:
-                    skin_.x[index] = std::clamp(point.x / width_, baseX_[index] - kLineReach,
-                                                baseX_[index] + kLineReach);
-                    break;
-                case Grip::None: break;
-            }
+            // Точка ходит в обе оси. По вертикали — от кромки до четверти
+            // высоты; по горизонтали — между соседками, не выходя со своей
+            // половины разворота: середина — граница листов.
+            const bool top = dragCurve_ < 2;
+            const bool left = dragCurve_ % 2 == 0;
+
+            edited.y[at] = top ? std::clamp(point.y / height_, 0.0f, kEdgeReach)
+                               : std::clamp(point.y / height_, 1.0f - kEdgeReach, 1.0f);
+
+            const float low = at == 0 ? (left ? 0.0f : 0.5f) : edited.x[at - 1] + kMinGap;
+            const float high = at == last ? (left ? 0.5f : 1.0f) : edited.x[at + 1] - kMinGap;
+            edited.x[at] = std::clamp(point.x / width_, low, high);
+
             redraw();
             args.handled(true);
         } else {
-            std::size_t index = 0;
-            active = gripAt(point, index);
+            int curveIndex = 0;
+            std::size_t pointIndex = 0;
+            overGrip = gripAt(point, curveIndex, pointIndex);
         }
 
         // Курсор — каждое движение заново: WinUI возвращает свою стрелку, а
-        // спросить курсор у элемента проекция не умеет. Макрос ресурса Windows
-        // допустим здесь — спрашиваем саму Windows.
-        if (active == Grip::Top || active == Grip::Bottom) {
-            ::SetCursor(::LoadCursorW(nullptr, IDC_SIZENS));
-        } else if (active == Grip::Line) {
-            ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEWE));
-        }
+        // задать курсор элементу проекция не умеет. Макрос ресурса Windows
+        // допустим здесь — спрашиваем саму Windows. Все четыре стрелки:
+        // точка ходит в обе оси.
+        if (overGrip) ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEALL));
     });
 
     tree.add_onPointerReleased([this](Object const&, PointerRoutedEventArgs& args) {
-        if (drag_ == Grip::None) return;
-        drag_ = Grip::None;
+        if (!dragging_) return;
+        dragging_ = false;
         args.handled(true);
+
+        // Точку отпустили — кривые устоялись: время пересчитать карту изгиба
+        // и показать страницу по-новому. Не на каждом движении: пересборка
+        // карты стоит прохода по всем пикселям слоя.
+        if (onCurvesChanged) onCurvesChanged();
     });
 
     root_ = tree;
 }
 
-bool SkinWizard::open(std::filesystem::path image) {
-    Microsoft::WRL::ComPtr<IWICFormatConverter> decoded = decodeImage(image);
-    if (!decoded) return false;
+bool SkinWizard::openNew(std::filesystem::path image) {
+    // Проверка снимка — здесь, чтобы не входить в мастер с пустой подложкой:
+    // рисовать его будет полоса, но отказ она глотает молча.
+    if (!decodeImage(image)) return false;
 
     image_ = std::move(image);
-    source_ = std::move(decoded);
-    bitmap_.Reset();
-
-    // Новый снимок — новая настройка: точки встают на начальные места.
     skin_ = defaultSkin();
-    baseX_ = skin_.x;
-    drag_ = Grip::None;
+    dragging_ = false;
     namePanel_.value().visibility(Visibility::Collapsed);
 
     redraw();
     return true;
+}
+
+bool SkinWizard::openEdit(const Skin& skin) {
+    std::filesystem::path image = skinDirectory() / skin.image;
+    if (!decodeImage(image)) return false;
+
+    image_ = std::move(image);
+    skin_ = skin;
+    dragging_ = false;
+    namePanel_.value().visibility(Visibility::Collapsed);
+
+    redraw();
+    return true;
+}
+
+void SkinWizard::show() {
+    if (open_) return;
+    open_ = true;
+    root_.value().visibility(Visibility::Visible);
+    root_.value().focus(FocusState::Programmatic);
+}
+
+void SkinWizard::hide() {
+    if (!open_) return;
+    open_ = false;
+    dragging_ = false;
+    namePanel_.value().visibility(Visibility::Collapsed);
+    root_.value().visibility(Visibility::Collapsed);
 }
 
 bool SkinWizard::resizeSurface() {
@@ -273,101 +314,78 @@ void SkinWizard::redraw() {
                               *D2D1::Matrix3x2F::ReinterpretBaseType(&atlas));
         context->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-        context->Clear(kVoid);
+        // Прозрачный лист: снимок и страницу рисует полоса под оверлеем.
+        context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-        if (!bitmap_ && source_) {
-            if (FAILED(context->CreateBitmapFromWicBitmap(source_.Get(), nullptr, &bitmap_)))
-                source_.Reset();   // не вышло — больше не пытаемся
-        }
-        if (bitmap_) {
-            // На всё окно, без сохранения пропорций — ровно так снимок ляжет
-            // под страницу, и кривые надо снимать с него в этом же виде.
-            context->DrawBitmap(bitmap_.Get(), D2D1::RectF(0.0f, 0.0f, width_, height_), 1.0f,
-                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        }
-
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> line;
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> curve;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> curveBrush;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fill;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ring;
-        context->CreateSolidColorBrush(kLineColor, &line);
-        context->CreateSolidColorBrush(kCurveColor, &curve);
+        context->CreateSolidColorBrush(kCurveColor, &curveBrush);
         context->CreateSolidColorBrush(kGripFill, &fill);
         context->CreateSolidColorBrush(kGripRing, &ring);
-        if (!line || !curve || !fill || !ring) return;
+        if (!curveBrush || !fill || !ring) return;
 
-        for (std::size_t index = 0; index < static_cast<std::size_t>(Skin::kPoints); ++index) {
-            const float x = skin_.x[index] * width_;
-            context->DrawLine({x, 0.0f}, {x, height_}, line.Get(), 1.0f);
-        }
+        // Линии-подсказки: у каждого листа свои, от его верхней кривой к его
+        // нижней, и только между крайними точками — за ними кривая всё равно
+        // держит их значение, и линия во всю ширину лишь мешала бы снимку.
+        for (int half = 0; half < 2; ++half) {
+            const EdgeCurve& top = curve(half);
+            const EdgeCurve& bottom = curve(half + 2);
+            constexpr std::size_t last = static_cast<std::size_t>(EdgeCurve::kPoints) - 1;
 
-        // Девять кривых: верхняя и нижняя проходят через свои точки, семь
-        // между ними — интерполяцией. Это и есть предпросмотр изгиба: строки
-        // будущей страницы лягут так же.
-        const int columns = std::max(2, static_cast<int>(width_ / kCurveStep));
-        const std::vector<float> top = sampleEdge(skin_.x, skin_.top, columns);
-        const std::vector<float> bottom = sampleEdge(skin_.x, skin_.bottom, columns);
+            for (int row = 0; row < kGuideRows; ++row) {
+                const float share = static_cast<float>(row) / (kGuideRows - 1);
+                const float base = kEdgeInset + share * (1.0f - 2.0f * kEdgeInset);
+                const float from = top.x[0] + (bottom.x[0] - top.x[0]) * share;
+                const float to = top.x[last] + (bottom.x[last] - top.x[last]) * share;
 
-        for (int row = 0; row < Skin::kPoints; ++row) {
-            const float share = static_cast<float>(row) / (Skin::kPoints - 1);
-            const float base = kEdgeInset + share * (1.0f - 2.0f * kEdgeInset);
+                const int steps =
+                    std::max(2, static_cast<int>((to - from) * width_ / kCurveStep));
+                D2D1_POINT_2F previous{};
 
-            D2D1_POINT_2F previous{};
-            for (int column = 0; column < columns; ++column) {
-                const auto at = static_cast<std::size_t>(column);
-                const float deviation = (top[at] - kEdgeInset) * (1.0f - share) +
-                                        (bottom[at] - (1.0f - kEdgeInset)) * share;
-                const float u = (static_cast<float>(column) + 0.5f) / static_cast<float>(columns);
-                const D2D1_POINT_2F point{u * width_, (base + deviation) * height_};
+                for (int step = 0; step <= steps; ++step) {
+                    const float u =
+                        from + (to - from) * static_cast<float>(step) / static_cast<float>(steps);
+                    const float deviation = (edgeAt(top, u) - kEdgeInset) * (1.0f - share) +
+                                            (edgeAt(bottom, u) - (1.0f - kEdgeInset)) * share;
+                    const D2D1_POINT_2F point{u * width_, (base + deviation) * height_};
 
-                if (column > 0) context->DrawLine(previous, point, curve.Get(), 1.5f);
-                previous = point;
+                    if (step > 0) context->DrawLine(previous, point, curveBrush.Get(), 1.5f);
+                    previous = point;
+                }
             }
         }
 
-        auto grip = [&](float x, float y) {
-            const D2D1_ELLIPSE circle{{x, y}, kGripRadius, kGripRadius};
-            context->FillEllipse(circle, fill.Get());
-            context->DrawEllipse(circle, ring.Get(), 1.5f);
-        };
-
-        for (std::size_t index = 0; index < static_cast<std::size_t>(Skin::kPoints); ++index) {
-            const float x = skin_.x[index] * width_;
-            grip(x, skin_.top[index] * height_);
-            grip(x, skin_.bottom[index] * height_);
-            grip(x, height_ * 0.5f);
+        for (int index = 0; index < 4; ++index) {
+            const EdgeCurve& edited = curve(index);
+            for (std::size_t at = 0; at < static_cast<std::size_t>(EdgeCurve::kPoints); ++at) {
+                const D2D1_ELLIPSE circle{{edited.x[at] * width_, edited.y[at] * height_},
+                                          kGripRadius, kGripRadius};
+                context->FillEllipse(circle, fill.Get());
+                context->DrawEllipse(circle, ring.Get(), 1.5f);
+            }
         }
     });
 }
 
-SkinWizard::Grip SkinWizard::gripAt(Point point, std::size_t& index) const {
-    if (width_ <= 0.0f || height_ <= 0.0f) return Grip::None;
+bool SkinWizard::gripAt(Point point, int& curveIndex, std::size_t& pointIndex) const {
+    if (width_ <= 0.0f || height_ <= 0.0f) return false;
 
-    // Не near/far: это макросы Windows, и имя с ними не живёт.
     const float reach = kGripReach * kGripReach;
-    auto hit = [&](float x, float y) {
-        const float dx = point.x - x;
-        const float dy = point.y - y;
-        return dx * dx + dy * dy <= reach;
-    };
 
-    for (std::size_t at = 0; at < static_cast<std::size_t>(Skin::kPoints); ++at) {
-        const float x = skin_.x[at] * width_;
-
-        if (hit(x, skin_.top[at] * height_)) {
-            index = at;
-            return Grip::Top;
-        }
-        if (hit(x, skin_.bottom[at] * height_)) {
-            index = at;
-            return Grip::Bottom;
-        }
-        if (hit(x, height_ * 0.5f)) {
-            index = at;
-            return Grip::Line;
+    for (int index = 0; index < 4; ++index) {
+        const EdgeCurve& edited = curve(index);
+        for (std::size_t at = 0; at < static_cast<std::size_t>(EdgeCurve::kPoints); ++at) {
+            const float dx = point.x - edited.x[at] * width_;
+            const float dy = point.y - edited.y[at] * height_;
+            if (dx * dx + dy * dy <= reach) {
+                curveIndex = index;
+                pointIndex = at;
+                return true;
+            }
         }
     }
-    return Grip::None;
+    return false;
 }
 
 void SkinWizard::chooseAnother() {
@@ -379,6 +397,7 @@ void SkinWizard::exitWizard() {
 }
 
 void SkinWizard::beginNaming() {
+    nameBox_.value().text(skin_.name);   // у правки — прежнее имя, у новой пусто
     namePanel_.value().visibility(Visibility::Visible);
     nameBox_.value().focus(FocusState::Programmatic);
 }
@@ -396,11 +415,11 @@ void SkinWizard::finishNaming(bool save) {
         reinterpret_cast<wchar_t const*>(nameBox_.value().text().c_str())};
     if (name.empty() || blank(name)) return;   // безымянную сохранять некуда
 
-    Skin skin = skin_;
-    skin.name = name;
+    Skin saved = skin_;
+    saved.name = name;
 
     namePanel_.value().visibility(Visibility::Collapsed);
-    if (onSave) onSave(std::move(skin), image_);
+    if (onSave) onSave(std::move(saved), image_);
 }
 
 }  // namespace bukvitsa::reader
