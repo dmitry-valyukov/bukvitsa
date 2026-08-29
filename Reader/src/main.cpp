@@ -525,12 +525,23 @@ wxl::Teardown wxl_launched() {
 
     auto const closePanel = [panel] { panel->close(); };
 
-    auto const showStartScreen = [window, screen, shown, rememberPosition, closePanel] {
+    auto const showStartScreen = [window, screen, settings, library, shown, rememberPosition,
+                                  closePanel] {
         closePanel();
         // Уходя из книги, место чтения пишем сразу: отложенная запись ждёт
         // паузы, а читатель уже ушёл -- и, может быть, закроет приложение
         // раньше, чем таймер сработает.
         rememberPosition();
+
+        // Большой кнопке — её книга: обложка, название, автор. На каждом
+        // показе, потому что последняя открытая книга могла смениться, пока
+        // экрана не было видно; при запуске реестр к этому моменту прочитан.
+        if (const BookEntry* entry = library->find(settings->lastBookGuid)) {
+            screen->setContinueBook(entry->title, entry->authors,
+                                    entry->cover.empty() ? std::filesystem::path{}
+                                                         : coverDirectory() / entry->cover);
+        }
+
         *shown = Screen::Start;
         window.content(screen->root());
     };
