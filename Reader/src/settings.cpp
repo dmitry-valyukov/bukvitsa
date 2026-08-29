@@ -63,6 +63,9 @@ Settings parseSettings(std::string xml) {
                 settings.margin /= 100.0f;
             }
         }
+        if (const wxl::xml::node* skin = root.child("skin")) {
+            settings.skin = attributeOf(*skin, "name");
+        }
         if (const wxl::xml::node* book = root.child("lastBook")) {
             settings.lastBookGuid = attributeOf(*book, "guid");
             settings.lastBookPath = attributeOf(*book, "path");
@@ -88,6 +91,10 @@ std::string settingsXml(const Settings& settings) {
     out.format("  <reading continue=\"{}\"/>\n", settings.continueReading ? "true" : "false");
     out.format("  <text theme=\"{}\" fontSize=\"{}\" lineHeight=\"{}\" margin=\"{}\"/>\n",
                settings.theme, settings.fontSize, settings.lineHeight, settings.margin);
+
+    if (!settings.skin.empty()) {
+        out.format("  <skin name=\"{}\"/>\n", xmlValue(settings.skin));
+    }
 
     if (!settings.lastBookGuid.empty()) {
         out.format("  <lastBook guid=\"{}\" path=\"{}\"/>\n", xmlValue(settings.lastBookGuid),

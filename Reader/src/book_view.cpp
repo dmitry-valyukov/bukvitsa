@@ -16,6 +16,8 @@
 // он единственный тянет за собой стандартные заголовки, которых нет здесь.
 #include "book_view.h"
 
+#include "imaging.h"
+
 #include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/glyph_painter.h"
 
@@ -207,41 +209,6 @@ bool controlHeld() {
     // Клавиатурные модификаторы у KeyRoutedEventArgs не спросить: WinUI их там
     // не отдаёт. Состояние клавиши знает Win32, и вопрос к нему — один вызов.
     return (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
-}
-
-/// Раскодирует фотографию-подложку темы. Путь в теме — от исполняемого файла,
-/// как и у остальных ресурсов из Assets, поэтому он достраивается от модуля,
-/// а не от текущего каталога: тот зависит от того, откуда читалку запустили.
-/// Фабрика WIC своя и на один вызов: подложка загружается при смене темы, а
-/// не в цикле, и держать фабрику ради этого незачем.
-Microsoft::WRL::ComPtr<IWICFormatConverter> decodeBackdrop(const wchar_t* relative) {
-    using Microsoft::WRL::ComPtr;
-
-    wchar_t module[MAX_PATH];
-    if (::GetModuleFileNameW(nullptr, module, MAX_PATH) == 0) return nullptr;
-    const std::filesystem::path path = std::filesystem::path(module).parent_path() / relative;
-
-    ComPtr<IWICImagingFactory> wic;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&wic))))
-        return nullptr;
-
-    ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                              WICDecodeMetadataCacheOnLoad, &decoder)))
-        return nullptr;
-
-    ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(decoder->GetFrame(0, &frame))) return nullptr;
-
-    ComPtr<IWICFormatConverter> converter;
-    if (FAILED(wic->CreateFormatConverter(&converter))) return nullptr;
-    if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
-                                     WICBitmapDitherTypeNone, nullptr, 0.0,
-                                     WICBitmapPaletteTypeMedianCut)))
-        return nullptr;
-
-    return converter;
 }
 
 }  // namespace
@@ -532,19 +499,50 @@ bool BookView::dismissOverlays() {
 }
 
 void BookView::setTheme(int index) {
-    theme_ = ((index % kThemeCount) + kThemeCount) % kThemeCount;
+    const int count = themeCount();
+    theme_ = ((index % count) + count) % count;
     note_.hide();   // подложка всплывашки покрашена прошлой темой
     root_.value().background(SolidColorBrush{ARGB{argbOf(paper().background)}});
     applyShadowTint();   // тени тоже покрашены прошлой темой
 
+    // Карта держит форму конкретной обложки — новой теме она не годится.
+    warpMap_.Reset();
+    warpFlat_ = false;
+
     // Слой изгиба нужен только теме с подложкой, а весит как две полосы —
     // на ровных темах он отпускается. Контекст и эффекты мелкие и остаются.
-    if (!paper().backdrop) {
+    if (backdropFile().empty()) {
         warpLayer_.Reset();
-        warpMap_.Reset();
         warpPixels_ = {};
     }
     redraw();
+}
+
+void BookView::setSkins(std::vector<Skin> skins) {
+    skins_ = std::move(skins);
+
+    // Реестр мог и похудеть: тема, показывающая исчезнувшую обложку, честно
+    // возвращается к первой встроенной.
+    if (theme_ >= themeCount()) theme_ = 0;
+
+    // Пересохранённая обложка могла сменить и снимок, и кривые.
+    backdropLoaded_.clear();
+    backdropSource_.Reset();
+    backdropBitmap_.Reset();
+    warpMap_.Reset();
+    warpFlat_ = false;
+    redraw();
+}
+
+const Skin* BookView::activeSkin() const {
+    if (theme_ < kThemeCount) return nullptr;
+    return &skins_[static_cast<std::size_t>(theme_ - kThemeCount)];
+}
+
+std::filesystem::path BookView::backdropFile() const {
+    if (const Skin* skin = activeSkin()) return skinDirectory() / skin->image;
+    if (paper().backdrop) return exeDirectory() / paper().backdrop;
+    return {};
 }
 
 void BookView::setFontSize(float size) {
@@ -1570,13 +1568,13 @@ const fb3::Node* BookView::noteAt(Point point, Point& anchor) const {
 }
 
 void BookView::drawBackdrop(ID2D1DeviceContext* context, float width, float height) {
-    const wchar_t* const wanted = paper().backdrop;
-    if (!wanted) return;
+    const std::filesystem::path wanted = backdropFile();
+    if (wanted.empty()) return;
 
-    if (backdropLoaded_ != wanted) {
-        backdropSource_ = decodeBackdrop(wanted);
+    if (backdropLoaded_ != wanted.native()) {
+        backdropSource_ = decodeImage(wanted);
         backdropBitmap_.Reset();
-        backdropLoaded_ = wanted;
+        backdropLoaded_ = wanted.native();
     }
 
     if (!backdropBitmap_ && backdropSource_) {
@@ -1614,31 +1612,73 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
 
         warpLayer_.Reset();
         warpMap_.Reset();
+        warpFlat_ = false;
 
         const D2D1_BITMAP_PROPERTIES1 layerProps{
             {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED},
             96.0f, 96.0f, D2D1_BITMAP_OPTIONS_TARGET, nullptr};
         if (FAILED(warpContext_->CreateBitmap(pixels, nullptr, 0, &layerProps, &warpLayer_)))
             return false;
+        warpPixels_ = pixels;
+    }
+
+    // Обложка с нетронутыми точками — плоская: гнуть нечего, полоса рисуется
+    // напрямую. Ответ запомнен, чтобы не пересчитывать кривые на каждый кадр;
+    // сбрасывают его смена темы, реестра обложек и размера полосы.
+    if (warpFlat_) return false;
+
+    if (!warpMap_) {
+        // Отклонения краёв от их прямых начальных линий, в долях высоты
+        // полосы, по значению на столбец карты. Встроенная тема — идеализация:
+        // купол синуса, вверх у верхнего края и вниз у нижнего. У обложки
+        // вместо синуса — кривые, снятые мастером с самого снимка.
+        const int columns = static_cast<int>(pixels.width);
+        std::vector<float> topEdge;
+        std::vector<float> bottomEdge;
+
+        if (const Skin* skin = activeSkin()) {
+            topEdge = sampleEdge(skin->x, skin->top, columns);
+            bottomEdge = sampleEdge(skin->x, skin->bottom, columns);
+            for (float& value : topEdge) value -= kEdgeInset;
+            for (float& value : bottomEdge) value -= 1.0f - kEdgeInset;
+        } else {
+            topEdge.resize(static_cast<std::size_t>(columns));
+            bottomEdge.resize(static_cast<std::size_t>(columns));
+            const float amplitude = kBulge / height_;
+            for (int x = 0; x < columns; ++x) {
+                const float across = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
+                const float dome =
+                    std::sin(std::numbers::pi_v<float> * std::abs(across - 0.5f) * 2.0f);
+                topEdge[static_cast<std::size_t>(x)] = -dome * amplitude;
+                bottomEdge[static_cast<std::size_t>(x)] = dome * amplitude;
+            }
+        }
+
+        float amplitude = 0.0f;
+        for (int x = 0; x < columns; ++x) {
+            amplitude = std::max({amplitude, std::abs(topEdge[static_cast<std::size_t>(x)]),
+                                  std::abs(bottomEdge[static_cast<std::size_t>(x)])});
+        }
+        if (amplitude <= 0.0f) {
+            warpFlat_ = true;
+            return false;
+        }
+        warpAmplitude_ = amplitude;
 
         // Карта хранит чистую форму изгиба: канал G — доля смещения по Y от
         // размаха эффекта, 128 — «не смещать». Смещение обратное (эффект
-        // читает «откуда взять», а не «куда сдвинуть»), поэтому у верхних
-        // строк, уезжающих вверх, в карте стоит плюс — взять снизу.
+        // читает «откуда взять», а не «куда сдвинуть»), поэтому у строк,
+        // уезжающих вверх, в карте стоит плюс — взять снизу. Между краями
+        // отклонение интерполируется линейно по высоте.
         std::vector<std::uint8_t> bytes(std::size_t{pixels.width} * pixels.height * 4);
-        std::vector<float> dome(pixels.width);
-        for (UINT32 x = 0; x < pixels.width; ++x) {
-            const float across = (static_cast<float>(x) + 0.5f) / static_cast<float>(pixels.width);
-            dome[x] = std::sin(std::numbers::pi_v<float> * std::abs(across - 0.5f) * 2.0f);
-        }
         for (UINT32 y = 0; y < pixels.height; ++y) {
-            const float depth =
-                ((static_cast<float>(y) + 0.5f) / static_cast<float>(pixels.height) - 0.5f) * 2.0f;
+            const float down = (static_cast<float>(y) + 0.5f) / static_cast<float>(pixels.height);
             std::uint8_t* row = &bytes[std::size_t{y} * pixels.width * 4];
             for (UINT32 x = 0; x < pixels.width; ++x) {
+                const float shift = topEdge[x] + (bottomEdge[x] - topEdge[x]) * down;
                 std::uint8_t* px = row + std::size_t{x} * 4;
                 px[0] = 128;   // B — не читается
-                px[1] = static_cast<std::uint8_t>(127.5f * (1.0f - dome[x] * depth) + 0.5f);
+                px[1] = static_cast<std::uint8_t>(127.5f * (1.0f - shift / amplitude) + 0.5f);
                 px[2] = 128;   // R — канал X, нейтрально
                 px[3] = 255;
             }
@@ -1647,11 +1687,8 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
             {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED},
             96.0f, 96.0f, D2D1_BITMAP_OPTIONS_NONE, nullptr};
         if (FAILED(warpContext_->CreateBitmap(pixels, bytes.data(), pixels.width * 4, &mapProps,
-                                              &warpMap_))) {
-            warpLayer_.Reset();
+                                              &warpMap_)))
             return false;
-        }
-        warpPixels_ = pixels;
     }
 
     if (!warpDisplace_) {
@@ -1674,10 +1711,12 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
 
     warpDisplace_->SetInput(0, warpLayer_.Get());
     warpDisplace_->SetInput(1, warpMap_.Get());
-    // Размах — в пикселях слоя: прогиб kBulge DIP на экране — это kBulge·scale
-    // пикселей поверхности и вдвое больше в слое двойной высоты; ещё двойка —
-    // потому что карта отклоняется от середины не дальше половины размаха.
-    warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_SCALE, 4.0f * kBulge * scale_);
+    // Размах — в пикселях слоя: наибольшее отклонение краёв в долях высоты —
+    // это warpAmplitude_·height_·scale_ пикселей поверхности и вдвое больше в
+    // слое двойной высоты; ещё двойка — потому что карта отклоняется от
+    // середины не дальше половины размаха.
+    warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_SCALE,
+                            4.0f * warpAmplitude_ * height_ * scale_);
     return true;
 }
 
@@ -1687,7 +1726,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     // Ровные темы рисуются как прежде, напрямую. С фотографией содержимое
     // идёт через слой изгиба: бумага на снимке выпуклая, и плоские строки
     // на ней выглядели бы наклейкой.
-    if (!paper().backdrop) {
+    if (backdropFile().empty()) {
         drawPageContent(context, width, height);
         return;
     }

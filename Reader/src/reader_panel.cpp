@@ -269,28 +269,8 @@ UIElement ReaderPanel::buildSettings() {
         };
     };
 
-    auto themes = StackPanel{Orientation::Horizontal};
-    for (int index = 0; index < kThemeCount; ++index) {
-        auto button = Button{
-            kThemes[index].name,
-            fontSize = 13,
-            Margin{0, 0, 6, 0},
-            Padding{12, 6},
-            foreground = SolidColorBrush{ARGB{kInk}},
-            background = SolidColorBrush{ARGB{0x00000000}},
-            borderBrush = SolidColorBrush{ARGB{kEdge}},
-            BorderThickness{1},
-            CornerRadius{4},
-            onClick =
-                [this, index](Object const&, RoutedEventArgs&) {
-                    view_.setTheme(index);
-                    markTheme();
-                    if (onSettingsChanged) onSettingsChanged();
-                },
-        };
-        themeButtons_.push_back(button);
-        themes.children().append(button);
-    }
+    themesPanel_ = StackPanel{};
+    refreshThemes();
 
     // Ползунок, а не пара кнопок: кегль подбирают, а не выставляют числом, и
     // видеть весь ход сразу удобнее, чем нажимать «плюс» восемь раз.
@@ -327,7 +307,7 @@ UIElement ReaderPanel::buildSettings() {
         horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
         content = StackPanel{
             caption(L"Тема"),
-            themes,
+            themesPanel_.value(),
             caption(L"Кегль"),
             fontSize_.value(),
             caption(L"Интерлиньяж"),
@@ -495,6 +475,73 @@ void ReaderPanel::toggleBookmark() {
 
     fillBookmarks();
     if (onStateChanged) onStateChanged();
+}
+
+void ReaderPanel::refreshThemes() {
+    using namespace wxl::dsl;
+
+    themesPanel_.value().children().clear();
+    themeButtons_.clear();
+
+    // Индексы тем сквозные: сперва встроенные, затем обложки — ровно так их
+    // считает и полоса набора. markTheme() ходит по кнопкам тем же счётом.
+    auto themeButton = [this](std::wstring_view caption, int index, Thickness margin) {
+        return Button{
+            caption,
+            fontSize = 13,
+            Margin{margin},
+            Padding{12, 6},
+            foreground = SolidColorBrush{ARGB{kInk}},
+            background = SolidColorBrush{ARGB{0x00000000}},
+            borderBrush = SolidColorBrush{ARGB{kEdge}},
+            BorderThickness{1},
+            CornerRadius{4},
+            onClick =
+                [this, index](Object const&, RoutedEventArgs&) {
+                    view_.setTheme(index);
+                    markTheme();
+                    if (onSettingsChanged) onSettingsChanged();
+                },
+        };
+    };
+
+    // Встроенные — в строчку, как и были: их четыре, и они короткие.
+    auto builtins = StackPanel{Orientation::Horizontal};
+    for (int index = 0; index < kThemeCount; ++index) {
+        auto button = themeButton(kThemes[index].name, index, Thickness{0, 0, 6, 0});
+        themeButtons_.push_back(button);
+        builtins.children().append(button);
+    }
+    themesPanel_.value().children().append(builtins);
+
+    // Обложки — по строке на каждую: имя даёт читатель, и в строчку они не
+    // помещаются.
+    const std::vector<Skin>& skins = view_.skins();
+    for (std::size_t index = 0; index < skins.size(); ++index) {
+        auto button = themeButton(skins[index].name, kThemeCount + static_cast<int>(index),
+                                  Thickness{0, 6, 0, 0});
+        themeButtons_.push_back(button);
+        themesPanel_.value().children().append(button);
+    }
+
+    // Дорога в мастер — последней строкой, после всех тем.
+    themesPanel_.value().children().append(Button{
+        L"Добавить обложку…",
+        fontSize = 13,
+        Margin{0, 6, 0, 0},
+        Padding{12, 6},
+        foreground = SolidColorBrush{ARGB{kDim}},
+        background = SolidColorBrush{ARGB{0x00000000}},
+        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        BorderThickness{1},
+        CornerRadius{4},
+        onClick =
+            [this](Object const&, RoutedEventArgs&) {
+                if (onAddSkin) onAddSkin();
+            },
+    });
+
+    markTheme();
 }
 
 void ReaderPanel::markTheme() {

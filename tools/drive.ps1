@@ -156,6 +156,37 @@ try {
                 [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
                 Start-Sleep -Milliseconds 150
             }
+            'drag' {
+                # Перетаскивание: нажать в первой точке, доехать до второй,
+                # отпустить. Дорога проходится шагами, потому что приложение
+                # ведёт перетаскиваемое по событиям движения, а не по концам.
+                # Движение — mouse_event MOVE|ABSOLUTE, а не SetCursorPos: тот
+                # переставляет курсор, но событий указателя для современного
+                # стека ввода не рождает, и WinUI перетаскивания не видит.
+                Raise-Window
+                $xy = $rest -split '\s+'
+                $r = Get-WindowRect
+                $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+                $x1 = $r.X + [int]$xy[0]; $y1 = $r.Y + [int]$xy[1]
+                $x2 = $r.X + [int]$xy[2]; $y2 = $r.Y + [int]$xy[3]
+                $move = {
+                    param([double]$x, [double]$y)
+                    $ax = [uint32]($x * 65535 / ($bounds.Width - 1))
+                    $ay = [uint32]($y * 65535 / ($bounds.Height - 1))
+                    [Win]::mouse_event(0x8001, $ax, $ay, 0, [UIntPtr]::Zero)   # MOVE|ABSOLUTE
+                }
+                & $move $x1 $y1
+                Start-Sleep -Milliseconds 80
+                [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
+                Start-Sleep -Milliseconds 80
+                $steps = 16
+                for ($i = 1; $i -le $steps; $i++) {
+                    & $move ($x1 + ($x2 - $x1) * $i / $steps) ($y1 + ($y2 - $y1) * $i / $steps)
+                    Start-Sleep -Milliseconds 25
+                }
+                [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
+                Start-Sleep -Milliseconds 150
+            }
             'rclick' {
                 # Правая кнопка — не роскошь драйвера: ею читалка открывает
                 # свой ящик, и проверить это иначе нечем.

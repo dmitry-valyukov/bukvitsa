@@ -17,6 +17,7 @@
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: стандартный заголовок, включённый после импорта, MSVC уже не
 // принимает.
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -24,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "skins.h"
 #include "theme.h"
 
 #include "DrawingSurface.h"
@@ -83,6 +85,15 @@ public:
 
     void setTheme(int index);
     int theme() const { return theme_; }
+
+    /// Обложки читателя. Они продолжают список тем: индексы идут сперва по
+    /// `kThemes`, затем по обложкам, и `setTheme` листает всех подряд. Список
+    /// приходит из реестра при запуске и после каждого сохранения в мастере.
+    void setSkins(std::vector<Skin> skins);
+    const std::vector<Skin>& skins() const { return skins_; }
+
+    /// Обложка, если текущая тема — обложка; для встроенных тем nullptr.
+    const Skin* activeSkin() const;
 
     void setFontSize(float size);
     float fontSize() const { return fontSize_; }
@@ -260,8 +271,20 @@ private:
     bool ensureWarp(ID2D1DeviceContext* context);
 
     /// Цвета текущей темы. Имя не theme(): так зовётся её номер, а перегрузка
-    /// по одному лишь типу возврата в C++ невозможна.
-    const Theme& paper() const { return kThemes[theme_]; }
+    /// по одному лишь типу возврата в C++ невозможна. Обложка носит палитру
+    /// встроенной темы с фотографией — мастер задаёт снимок и кривые, а не
+    /// цвета.
+    const Theme& paper() const {
+        return kThemes[theme_ < kThemeCount ? theme_ : kAntiqueTheme];
+    }
+
+    /// Сколько всего тем: встроенные плюс обложки.
+    int themeCount() const { return kThemeCount + static_cast<int>(skins_.size()); }
+
+    /// Файл фотографии-подложки текущей темы — или пустой путь у ровных тем.
+    /// У встроенной темы он лежит в Assets рядом с исполняемым, у обложки — в
+    /// каталоге данных, копией снимка.
+    std::filesystem::path backdropFile() const;
 
     wxl::Compositor compositor_;
     wxl::Nullable<wxl::Grid> root_ = nullptr;
@@ -406,6 +429,7 @@ private:
     mutable std::wstring charFamily_;
 
     int theme_ = 0;
+    std::vector<Skin> skins_;
     float fontSize_ = 20.0f;
     float lineHeight_ = 1.45f;
     float marginEms_ = 3.0f;
@@ -422,11 +446,11 @@ private:
 
     /// Подложка темы на пути от файла к экрану — та же пара, что у картинок
     /// книги: раскодированная фотография и её битмап на устройстве, встающий
-    /// при первой отрисовке. Чья она, помнит `backdropLoaded_` — это путь из
-    /// темы, и смена темы на другую подложку сбрасывает обе ступени.
+    /// при первой отрисовке. Чья она, помнит `backdropLoaded_` — это путь
+    /// файла, и смена темы на другую подложку сбрасывает обе ступени.
     Microsoft::WRL::ComPtr<IWICFormatConverter> backdropSource_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> backdropBitmap_;
-    const wchar_t* backdropLoaded_ = nullptr;
+    std::wstring backdropLoaded_;
 
     /// Изгиб страницы поверх фотографии: содержимое рисуется в слой двойной
     /// высоты, Displacement Map гнёт его по карте, Scale ужимает по вертикали
@@ -440,6 +464,13 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Effect> warpDisplace_;
     Microsoft::WRL::ComPtr<ID2D1Effect> warpShrink_;
     D2D1_SIZE_U warpPixels_{};
+
+    /// Наибольшее отклонение краёв в карте, в долях высоты полосы, — им
+    /// нормирована карта, и из него считается размах эффекта. Ноль у обложки
+    /// с нетронутыми точками: гнуть нечего, и страница рисуется плоско —
+    /// `warpFlat_` помнит это, чтобы не пересчитывать кривые на каждый кадр.
+    float warpAmplitude_ = 0.0f;
+    bool warpFlat_ = false;
 };
 
 }  // namespace bukvitsa::reader

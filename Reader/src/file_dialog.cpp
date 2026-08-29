@@ -55,6 +55,26 @@ std::filesystem::path askForBook(HWND__* owner) {
     return showAndTake(*dialog.Get(), owner);
 }
 
+std::filesystem::path askForImage(HWND__* owner) {
+    ComPtr<IFileOpenDialog> dialog;
+    if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&dialog)))) {
+        return {};
+    }
+
+    // Форматы — те, что раскодирует WIC без расширений: чем открыть снимок,
+    // решает imaging.cpp, а фильтр лишь помогает его найти.
+    static const COMDLG_FILTERSPEC kFilters[] = {
+        {L"Изображения", L"*.png;*.jpg;*.jpeg;*.bmp"},
+        {L"Все файлы", L"*.*"},
+    };
+    dialog->SetFileTypes(static_cast<UINT>(sizeof(kFilters) / sizeof(kFilters[0])), kFilters);
+    dialog->SetTitle(L"Снимок для обложки");
+    dialog->SetClientGuid(kClientId);
+
+    return showAndTake(*dialog.Get(), owner);
+}
+
 std::filesystem::path askForFolder(HWND__* owner) {
     ComPtr<IFileOpenDialog> dialog;
     if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,

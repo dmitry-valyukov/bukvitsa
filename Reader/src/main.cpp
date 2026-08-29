@@ -20,6 +20,7 @@
 #include "WindowHandle.h"
 #include "WindowPlacement.h"
 #include "library_screen.h"
+#include "skin_wizard.h"
 #include "start_screen.h"
 
 // Последним: он ведёт к модели книги, а она импортирует wxl.text, после чего
@@ -65,10 +66,10 @@ constexpr auto kSaveQuiet = 800ms;
 // То же для места чтения: страницы листают подряд, а файл на книгу один.
 constexpr auto kPositionQuiet = 1500ms;
 
-// Что сейчас в окне. Три экрана, и переход между ними — присваивание
+// Что сейчас в окне. Четыре экрана, и переход между ними — присваивание
 // содержимого; перечисление нужно только затем, чтобы Escape знал, куда
-// возвращать.
-enum class Screen { Start, Library, Book };
+// возвращать. Из мастера обложек выводит его собственная кнопка.
+enum class Screen { Start, Library, Book, Wizard };
 
 // ---- то, из чего собрано приложение ---------------------------------------
 //
@@ -88,6 +89,7 @@ struct App {
     std::shared_ptr<StartScreen> screen;
     std::shared_ptr<Screen> shown;
     std::shared_ptr<Screen> bookCameFrom;
+    std::shared_ptr<Skins> skins;
 };
 
 // ---- корутины приложения --------------------------------------------------
@@ -201,6 +203,50 @@ task addFolderFlow(App app, std::filesystem::path folder, std::function<void()> 
     }
 
     if (added) co_await io.writeFile(libraryPath(), app.library->toXml());
+}
+
+/// Сохраняет обложку из мастера: копия снимка, запись реестра, немедленное
+/// применение — сохранённая обложка тут же становится текущей темой.
+task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
+                  std::function<void()> leaveWizard) {
+    Io& io = *app.io;
+
+    const std::optional<std::string> bytes = co_await io.readFile(photo);
+
+    if (!bytes) {
+        ::MessageBoxW(window_handle(app.window),
+                      (L"Не удалось прочитать снимок:\n" + photo.wstring()).c_str(), L"Буквица",
+                      MB_OK | MB_ICONWARNING);
+        co_return;
+    }
+
+    // Имя копии — новый guid с родным расширением: имена обложек выбирает
+    // читатель и они могут повторить друг друга, а guid — нет.
+    std::wstring file = newGuid() + photo.extension().wstring();
+
+    co_await io.writeFile(skinDirectory() / file, std::move(*bytes));
+
+    skin.image = std::move(file);
+    const std::wstring skinName = skin.name;
+    app.skins->put(std::move(skin));
+
+    co_await io.writeFile(skinsPath(), app.skins->toXml());
+
+    app.view->setSkins(app.skins->list());
+    app.panel->refreshThemes();
+
+    const std::vector<Skin>& list = app.skins->list();
+    for (std::size_t index = 0; index < list.size(); ++index) {
+        if (list[index].name == skinName) {
+            app.view->setTheme(kThemeCount + static_cast<int>(index));
+            break;
+        }
+    }
+
+    app.settings->skin = skinName;
+    co_await io.writeFile(settingsPath(), settingsXml(*app.settings));
+
+    leaveWizard();
 }
 
 /// «Продолжить чтение»: найти книгу, которую читали, и открыть её.
@@ -328,10 +374,30 @@ task startupFlow(App app, wxl::AppWindow appWindow, wxl::DispatcherQueueTimer sp
 
     *app.settings = parseSettings(settingsXmlText.value_or(std::string{}));
 
-    app.view->setTheme(app.settings->theme);
     app.view->setFontSize(app.settings->fontSize);
     app.view->setLineHeight(app.settings->lineHeight);
     app.view->setMargin(app.settings->margin);
+
+    // Обложки — раньше темы: выбранной темой может оказаться обложка, а её
+    // индекс продолжает список за встроенными и без реестра не существует.
+    const std::optional<std::string> skinsXmlText = co_await io.readFile(skinsPath());
+
+    app.skins->loadFrom(skinsXmlText.value_or(std::string{}));
+    app.view->setSkins(app.skins->list());
+    app.panel->refreshThemes();
+
+    int theme = app.settings->theme;
+
+    if (!app.settings->skin.empty()) {
+        const std::vector<Skin>& list = app.skins->list();
+        for (std::size_t index = 0; index < list.size(); ++index) {
+            if (list[index].name == app.settings->skin) {
+                theme = kThemeCount + static_cast<int>(index);
+                break;
+            }
+        }
+    }
+    app.view->setTheme(theme);
 
     // Реестр читается всегда, а не только когда показывают полку: он маленький,
     // читает его чужой поток, и без него не ответить на «продолжить чтение» по
@@ -397,6 +463,8 @@ wxl::Teardown wxl_launched() {
     auto screen = std::make_shared<StartScreen>(window.compositor());
     auto view = std::make_shared<BookView>(window.compositor(), window.dispatcherQueue());
     auto shelf = std::make_shared<LibraryScreen>();
+    auto skins = std::make_shared<Skins>();
+    auto wizard = std::make_shared<SkinWizard>(window.compositor());
 
     // Панель живёт поверх полосы набора: «поверх страницы» — это внутри полосы,
     // а не рядом с ней.
@@ -462,8 +530,8 @@ wxl::Teardown wxl_launched() {
     };
 
     // Всё, из чего собрано приложение, одной связкой: её берут корутины.
-    App const app{io.get(), window, settings, library, state,        view,
-                  panel,    shelf,  screen,   shown,   bookCameFrom};
+    App const app{io.get(), window, settings, library,      state, view,
+                  panel,    shelf,  screen,   shown,        bookCameFrom, skins};
 
     auto const showLibrary = [io, app, window, shelf, library, settings, shown, rememberPosition,
                               closePanel] {
@@ -526,11 +594,71 @@ wxl::Teardown wxl_launched() {
     };
 
     panel->onSettingsChanged = [io, settings, view] {
-        settings->theme = view->theme();
+        // Обложка запоминается именем, встроенная тема — номером; прежний
+        // номер при обложке остаётся как то, куда вернуться, если реестр
+        // обложек пропадёт.
+        if (const Skin* active = view->activeSkin()) {
+            settings->skin = active->name;
+        } else {
+            settings->skin.clear();
+            settings->theme = view->theme();
+        }
         settings->fontSize = view->fontSize();
         settings->lineHeight = view->lineHeight();
         settings->margin = view->margin();
         io->spawn(saveSettingsLater(*io, *settings));
+    };
+
+    // ---- мастер обложек ----
+    //
+    // Четвёртый экран окна. Дорога туда одна — кнопка в панели «Вид», дорога
+    // обратно — его собственные кнопки; Escape мастером не занимается.
+    auto wizardCameFrom = std::make_shared<Screen>(Screen::Book);
+
+    auto const leaveWizard = [window, view, shelf, screen, shown, wizardCameFrom] {
+        *shown = *wizardCameFrom;
+        switch (*shown) {
+            case Screen::Book: window.content(view->root()); break;
+            case Screen::Library: window.content(shelf->root()); break;
+            default: window.content(screen->root()); break;
+        }
+    };
+
+    auto const badImage = [window](std::filesystem::path const& path) {
+        ::MessageBoxW(window_handle(window),
+                      (L"Не удалось открыть изображение:\n" + path.wstring()).c_str(), L"Буквица",
+                      MB_OK | MB_ICONWARNING);
+    };
+
+    panel->onAddSkin = [window, wizard, shown, wizardCameFrom, closePanel, badImage] {
+        std::filesystem::path const path = askForImage(window_handle(window));
+
+        if (path.empty()) return;
+
+        if (!wizard->open(path)) {
+            badImage(path);
+            return;
+        }
+
+        closePanel();
+        *wizardCameFrom = *shown;
+        *shown = Screen::Wizard;
+        window.content(wizard->root());
+    };
+
+    wizard->onChooseAnother = [window, wizard, badImage] {
+        std::filesystem::path const path = askForImage(window_handle(window));
+
+        // Отказался — остаёмся на прежнем снимке: читатель ничего не терял.
+        if (path.empty()) return;
+
+        if (!wizard->open(path)) badImage(path);
+    };
+
+    wizard->onExit = leaveWizard;
+
+    wizard->onSave = [io, app, leaveWizard](Skin skin, std::filesystem::path photo) {
+        io->spawn(saveSkinFlow(app, std::move(skin), std::move(photo), leaveWizard));
     };
 
     screen->onContinueReading = [io, settings, library, openBook, addBook] {
@@ -702,6 +830,6 @@ wxl::Teardown wxl_launched() {
     // Рабочий поток останавливается здесь же: очередь интерфейсного к этому
     // моменту уже не принимает заданий, и операции, не успевшие вернуться,
     // возобновлять некому и незачем.
-    return [io, window, screen, shelf, view, library, settings, saveTimer, positionTimer,
-            splashTimer](Reason) { io->stop(); };
+    return [io, window, screen, shelf, view, library, settings, skins, wizard, saveTimer,
+            positionTimer, splashTimer](Reason) { io->stop(); };
 }

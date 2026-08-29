@@ -64,4 +64,8 @@ inline constexpr Theme kThemes[] = {
 
 inline constexpr int kThemeCount = static_cast<int>(sizeof(kThemes) / sizeof(kThemes[0]));
 
+/// Тема, чью палитру носят обложки читателя: мастер задаёт снимок и кривые,
+/// а цвета обложка берёт у единственной встроенной темы с фотографией.
+inline constexpr int kAntiqueTheme = 2;
+
 }  // namespace bukvitsa::reader
