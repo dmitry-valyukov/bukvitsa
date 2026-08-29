@@ -367,7 +367,33 @@ Grid BookView::buildTree() {
     });
 
     tree.add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
-        if (preview_) return;   // поверх полосы лежит мастер — листать нечего
+        // Поверх полосы лежит мастер, но листание остаётся: изгибы
+        // подстраивают под конкретный текст, и ходить по книге нужно прямо
+        // из него. Всё остальное — Enter, Escape, тема — мастера.
+        if (preview_) {
+            switch (args.key()) {
+                case VirtualKey::PageDown:
+                case VirtualKey::Right:
+                case VirtualKey::Down:
+                case VirtualKey::Space:
+                    turnPage(1);
+                    break;
+                case VirtualKey::PageUp:
+                case VirtualKey::Left:
+                case VirtualKey::Up:
+                    turnPage(-1);
+                    break;
+                case VirtualKey::Home:
+                    if (book_) goTo(catchUpTo(0));
+                    break;
+                case VirtualKey::End:
+                    if (book_) goTo(catchUpTo(book_->characterCount()));
+                    break;
+                default: return;
+            }
+            args.handled(true);
+            return;
+        }
         switch (args.key()) {
             case VirtualKey::PageDown:
             case VirtualKey::Right:
@@ -411,7 +437,8 @@ Grid BookView::buildTree() {
     });
 
     tree.add_onPointerWheelChanged([this](Object const&, PointerRoutedEventArgs& args) {
-        if (preview_) return;   // поверх полосы лежит мастер
+        // Работает и под мастером: колесо листает, а Ctrl с колесом меняет
+        // кегль — изгиб подстраивают под конкретный текст в конкретном виде.
         const int delta = args.getCurrentPoint(root_.value()).properties().mouseWheelDelta();
         const bool control = (static_cast<uint32_t>(args.keyModifiers()) &
                               static_cast<uint32_t>(VirtualKeyModifiers::Control)) != 0;
@@ -425,9 +452,22 @@ Grid BookView::buildTree() {
     });
 
     tree.add_onPointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
-        if (preview_) return;   // поверх полосы лежит мастер
         const PointerPoint touch = args.getCurrentPoint(root_.value());
         const Point point = touch.position();
+
+        // Поверх полосы лежит мастер: из всего щелчка полосе остаётся
+        // листание по третям — ни ящика, ни сносок, ни фокуса. Сюда доходят
+        // только щелчки мимо точек сетки: попавшие мастер разобрал сам.
+        if (preview_) {
+            if (!touch.properties().isLeftButtonPressed()) return;
+            const float third = width_ / 3.0f;
+            if (point.x < third) {
+                turnPage(-1);
+            } else if (point.x > width_ - third) {
+                turnPage(1);
+            }
+            return;
+        }
         root_.value().focus(FocusState::Programmatic);
         args.handled(true);
 

@@ -2,6 +2,8 @@
 
 #include <chrono>
 
+#include "card.h"
+
 namespace bukvitsa::reader {
 
 using namespace wxl;
@@ -10,10 +12,8 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Ширина колонки кнопок и отступ от правого края.
+// Ширина колонки кнопок; где ей стоять, знает карточка (card.h).
 constexpr float kButtonWidth = 300.0f;
-constexpr float kRightMargin = 72.0f;
-constexpr float kTopMargin = 64.0f;
 
 // Проявление: длительность одной кнопки и разбег между соседними. Четыре
 // кнопки с шагом 40 мс успокаиваются к 320 мс — за 400 мс появление уже
@@ -38,15 +38,19 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
     // Кнопки собираются раньше корня: каждая должна успеть отдать свой визуал
     // в revealing_ до того, как дерево уедет в конструктор Grid.
     auto panel = StackPanel{
-        hAlign.right,
-        vAlign.top,
-        Margin{0, kTopMargin, kRightMargin, 0},
         addButton(L"Продолжить чтение", 72.0f, 19.0f, &onContinueReading),
         addButton(L"Моя библиотека", 46.0f, 15.0f, &onLibrary),
         addButton(L"Добавить книгу", 46.0f, 15.0f, &onAddBook),
         addButton(L"Добавить каталог", 46.0f, 15.0f, &onAddFolder),
         addButton(L"Выйти из читалки", 46.0f, 15.0f, &onExit, true),
     };
+
+    // Кнопки лежат на карточке — той же, что у мастера обложек. Проступать
+    // ей вместе с ними, поэтому прозрачность в ноль сразу, при построении.
+    auto card = buttonCard(panel);
+    Visual cardVisual = ElementCompositionPreview::getElementVisual(card);
+    cardVisual.opacity(0.0f);
+    cardVisual_ = cardVisual;
 
     // Картинка и панель — дети одной ячейки Grid: порядок объявления и есть
     // порядок по глубине, так что панель ложится поверх заставки.
@@ -68,7 +72,7 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
             hAlign.center,
             vAlign.top,
         },
-        panel,
+        card,
     };
 
     // Просить фокус раньше, чем дерево живо, бесполезно: элемент вне
@@ -145,6 +149,15 @@ void StartScreen::reveal() {
     revealed_ = true;
 
     auto const easing = compositor_.createLinearEasingFunction();
+
+    // Карточка — только прозрачностью и без разбега: подъём по Z несёт её
+    // тень, и анимация Translation увела бы его в ноль.
+    if (cardVisual_) {
+        auto fade = compositor_.createScalarKeyFrameAnimation();
+        fade.duration(kFadeDuration);
+        fade.insertKeyFrame(1.0f, 1.0f, easing);
+        cardVisual_.value().startAnimation(L"Opacity", fade);
+    }
 
     for (std::size_t index = 0; index < revealing_.size(); ++index) {
         auto const delay = kStagger * static_cast<int>(index);

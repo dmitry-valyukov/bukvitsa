@@ -52,6 +52,11 @@ private:
     wxl::Compositor compositor_;
     wxl::Nullable<wxl::Grid> root_ = nullptr;
     std::vector<wxl::Visual> revealing_;   ///< визуалы кнопок в порядке появления
+
+    /// Визуал карточки под кнопками. Проступает вместе с ними, но только
+    /// прозрачностью: её подъём по Z несёт тень, и гонять его нельзя.
+    wxl::Nullable<wxl::Visual> cardVisual_ = nullptr;
+
     bool revealed_ = false;
 };
 

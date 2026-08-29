@@ -523,9 +523,15 @@ void ReaderPanel::refreshThemes() {
                                   Thickness{0, 6, 0, 0});
         themeButtons_.push_back(button);
 
+        // Кнопка без текста обязана иметь тултип (правило дизайна, см.
+        // CLAUDE.md) — и он называет конкретную обложку, а не действие
+        // вообще.
+        const std::wstring tip = L"Настроить подложку «" + skins[index].name + L"»";
+
         auto gear = Button{
             L"",   // шестерёнка Segoe Fluent Icons
             fontFamily = FontFamily{L"Segoe Fluent Icons"},
+            toolTip = tip.c_str(),
             fontSize = 13,
             Margin{6, 6, 0, 0},
             Padding{8, 6},
