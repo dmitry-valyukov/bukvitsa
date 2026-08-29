@@ -82,6 +82,7 @@ wxl_add_doxygen_site(docs
         "${PROJECT_SOURCE_DIR}/Typography/include"
         "${PROJECT_SOURCE_DIR}/Typography/src"
         "${PROJECT_SOURCE_DIR}/Reader/src"
+        "${PROJECT_SOURCE_DIR}/Reader/doc"
     EXCLUDE
         "*/CLAUDE.md"
         "*/tests/*"
