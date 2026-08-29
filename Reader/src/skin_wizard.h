@@ -65,7 +65,11 @@ public:
 
 private:
     void buildTree();
-    wxl::Button overlayButton(std::wstring_view caption, void (SkinWizard::*handler)());
+
+    /// Кнопка карточки мастера. Главную от прочих отличают высота и кегль,
+    /// кнопку отмены — чуть более серое лицо, как на стартовом экране.
+    wxl::Button overlayButton(std::wstring_view caption, float tall, float kegel, bool cancel,
+                              void (SkinWizard::*handler)());
 
     /// Кривая по номеру: две верхние, две нижние. Номер и есть память о том,
     /// какую точку тянут.
@@ -82,6 +86,11 @@ private:
 
     void chooseAnother();
     void exitWizard();
+
+    /// «Сохранить» — и оно же действие по умолчанию на Enter. У правки
+    /// старой обложки имя уже есть, и диалог не показывается — сохранение
+    /// идёт сразу; имя спрашивается только у новой.
+    void saveRequested();
 
     void beginNaming();
     void finishNaming(bool save);

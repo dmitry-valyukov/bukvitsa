@@ -34,15 +34,20 @@ public:
 
     /// Что делают кнопки. Пустой обработчик значит «кнопка на месте, но
     /// делать ей пока нечего» — так и задумано для каталога.
+    ///
+    /// «Продолжить чтение» — действие по умолчанию, его зовёт Enter;
+    /// «Выйти из читалки» — отмена, её зовёт Escape.
     std::function<void()> onContinueReading;
     std::function<void()> onLibrary;
     std::function<void()> onAddBook;
     std::function<void()> onAddFolder;
+    std::function<void()> onExit;
 
 private:
-    /// Одна ширина на всех; главную от прочих отличают высота и кегль.
+    /// Одна ширина на всех; главную от прочих отличают высота и кегль, а
+    /// кнопку отмены — чуть более серое лицо.
     wxl::Button addButton(std::wstring_view caption, float tall, float kegel,
-                          std::function<void()>* action);
+                          std::function<void()>* action, bool cancel = false);
 
     wxl::Compositor compositor_;
     wxl::Nullable<wxl::Grid> root_ = nullptr;

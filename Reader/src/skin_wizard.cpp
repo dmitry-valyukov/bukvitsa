@@ -12,8 +12,6 @@
 
 #include "imaging.h"
 
-#include "Panels.h"
-
 namespace bukvitsa::reader {
 
 using namespace wxl;
@@ -26,10 +24,19 @@ constexpr uint32_t kChrome = 0xF21E1E22;
 constexpr uint32_t kInk = 0xFFE8E4DC;
 constexpr uint32_t kEdge = 0x33FFFFFF;
 
-// Кнопки — как на стартовом экране: та же ширина, та же полупрозрачность,
-// под ними должна просвечивать страница.
+// Кнопки — как на стартовом экране: та же ширина, то же место, та же
+// полупрозрачность, под ними должна просвечивать страница. Отмена — чуть
+// серее остальных, она уводит, а не ведёт.
 constexpr float kButtonWidth = 300.0f;
 constexpr float kRestingOpacity = 0.92f;
+constexpr float kTopMargin = 64.0f;
+constexpr float kRightMargin = 72.0f;
+constexpr uint32_t kCancelFace = 0xFFD9D6D2;
+
+// Карточка под кнопками — параметры общепринятой Card (см. HelloHere в
+// примерах wxl), только лицо не белое, а чёрно-коричневое и полупрозрачное:
+// карточка лежит на снимке книги и не должна его глушить.
+constexpr uint32_t kCardFace = 0xD81C1208;
 
 // Сетка поверх страницы. Кривые — тёплый акцент: их видно и на светлой
 // бумаге, и на тёмном столе. Кружочки полупрозрачны, как кнопки: под ними
@@ -37,6 +44,10 @@ constexpr float kRestingOpacity = 0.92f;
 constexpr D2D1_COLOR_F kCurveColor{1.0f, 0.72f, 0.30f, 0.9f};
 constexpr D2D1_COLOR_F kGripFill{1.0f, 1.0f, 1.0f, 0.55f};
 constexpr D2D1_COLOR_F kGripRing{0.15f, 0.12f, 0.08f, 0.7f};
+
+/// Тень кривой: две чёрно-коричневые полупрозрачные линии в пиксель над и
+/// под основной — они оттеняют её на светлой бумаге.
+constexpr D2D1_COLOR_F kCurveShade{0.11f, 0.07f, 0.03f, 0.55f};
 
 constexpr float kGripRadius = 7.0f;   ///< рисуемый кружочек, DIP
 constexpr float kGripReach = 12.0f;   ///< зона захвата: шире кружочка, промах злит
@@ -75,18 +86,21 @@ const EdgeCurve& SkinWizard::curve(int index) const {
     return const_cast<SkinWizard*>(this)->curve(index);
 }
 
-Button SkinWizard::overlayButton(std::wstring_view caption, void (SkinWizard::*handler)()) {
+Button SkinWizard::overlayButton(std::wstring_view caption, float tall, float kegel, bool cancel,
+                                 void (SkinWizard::*handler)()) {
     using namespace wxl::dsl;
 
     auto button = Button{
         caption,
         width = kButtonWidth,
-        height = 46.0f,
+        height = tall,
         FontWeight{600},
         Margin{0, 6},
-        fontSize = 15,
+        fontSize = kegel,
         onClick = [this, handler](Object const&, RoutedEventArgs&) { (this->*handler)(); },
     };
+
+    if (cancel) button.background(SolidColorBrush{ARGB{kCancelFace}});
 
     // Полупрозрачность — визуалом, как у стартового экрана, только без
     // анимации появления: мастер открывают действием, ждать ему нечего.
@@ -99,14 +113,28 @@ void SkinWizard::buildTree() {
 
     surfaceHost_ = Grid{};
 
-    // Кнопки — по центру правого листа: правая из двух равных колонок, в ней
-    // по центру обеих осей.
-    auto buttons = StackPanel{
-        hAlign.center,
-        vAlign.center,
-        overlayButton(L"Сохранить", &SkinWizard::beginNaming),
-        overlayButton(L"Выбрать другое изображение", &SkinWizard::chooseAnother),
-        overlayButton(L"Выйти из мастера обложек", &SkinWizard::exitWizard),
+    // Кнопки — там же, где на стартовом экране, на карточке-Card с тенью:
+    // «Сохранить» увеличена, как «Продолжить чтение», — это действие по
+    // умолчанию, его же зовёт Enter; «Выйти из мастера обложек» — отмена,
+    // её зовёт Escape.
+    auto buttons = Border{
+        hAlign.right,
+        vAlign.top,
+        Margin{0, kTopMargin, kRightMargin, 0},
+        CornerRadius{28},
+        background = SolidColorBrush{ARGB{kCardFace}},
+        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        BorderThickness{1},
+        shadow = ThemeShadow{},
+        translation = {0.0f, 0.0f, 32.0f},
+        Padding{16},
+        StackPanel{
+            overlayButton(L"Сохранить", 72.0f, 19.0f, false, &SkinWizard::saveRequested),
+            overlayButton(L"Выбрать другое изображение", 46.0f, 15.0f, false,
+                          &SkinWizard::chooseAnother),
+            overlayButton(L"Выйти из мастера обложек", 46.0f, 15.0f, true,
+                          &SkinWizard::exitWizard),
+        },
     };
 
     nameBox_ = TextBox{width = 320.0};
@@ -154,9 +182,34 @@ void SkinWizard::buildTree() {
         // проверке попадания, и тянуть точки было бы не за что.
         background = SolidColorBrush{ARGB{0x00000000}},
         surfaceHost_.value(),
-        Columns{Grid{}, buttons},
+        buttons,
         namePanel_.value(),
     };
+
+    // Enter — действие по умолчанию: «Сохранить», а в открытом диалоге имени
+    // — его «ОК». Escape — отмена: «Выйти из мастера обложек», а в диалоге —
+    // его «Отмена». На пути вниз, чтобы клавиши работали при любом фокусе.
+    tree.add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
+        const bool naming = namePanel_.value().visibility() == Visibility::Visible;
+        switch (args.key()) {
+            case VirtualKey::Enter:
+                if (naming) {
+                    finishNaming(true);
+                } else {
+                    saveRequested();
+                }
+                break;
+            case VirtualKey::Escape:
+                if (naming) {
+                    finishNaming(false);
+                } else {
+                    exitWizard();
+                }
+                break;
+            default: return;
+        }
+        args.handled(true);
+    });
 
     tree.add_onSizeChanged([this](Object const&, SizeChangedEventArgs&) {
         // Координаты в долях, поэтому смена размеров ничего не двигает по
@@ -318,12 +371,18 @@ void SkinWizard::redraw() {
         context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> curveBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shade;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fill;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ring;
         context->CreateSolidColorBrush(kCurveColor, &curveBrush);
+        context->CreateSolidColorBrush(kCurveShade, &shade);
         context->CreateSolidColorBrush(kGripFill, &fill);
         context->CreateSolidColorBrush(kGripRing, &ring);
-        if (!curveBrush || !fill || !ring) return;
+        if (!curveBrush || !shade || !fill || !ring) return;
+
+        // Смещение теневых линий — ровно пиксель экрана, какой бы ни был
+        // масштаб: рисуем в DIP, а пиксель хотим физический.
+        const float pixel = 1.0f / scale_;
 
         // Линии-подсказки: у каждого листа свои, от его верхней кривой к его
         // нижней, и только между крайними точками — за ними кривая всё равно
@@ -350,7 +409,16 @@ void SkinWizard::redraw() {
                                             (edgeAt(bottom, u) - (1.0f - kEdgeInset)) * share;
                     const D2D1_POINT_2F point{u * width_, (base + deviation) * height_};
 
-                    if (step > 0) context->DrawLine(previous, point, curveBrush.Get(), 1.5f);
+                    // Линия рисуется тройкой: тёмная в пиксель выше, тёмная в
+                    // пиксель ниже и основная поверх — тень отбивает её и от
+                    // светлой бумаги, и от текста.
+                    if (step > 0) {
+                        context->DrawLine({previous.x, previous.y - pixel},
+                                          {point.x, point.y - pixel}, shade.Get(), 1.5f);
+                        context->DrawLine({previous.x, previous.y + pixel},
+                                          {point.x, point.y + pixel}, shade.Get(), 1.5f);
+                        context->DrawLine(previous, point, curveBrush.Get(), 1.5f);
+                    }
                     previous = point;
                 }
             }
@@ -394,6 +462,16 @@ void SkinWizard::chooseAnother() {
 
 void SkinWizard::exitWizard() {
     if (onExit) onExit();
+}
+
+void SkinWizard::saveRequested() {
+    // У правки старой обложки копия и имя уже есть — сохранение идёт сразу,
+    // без диалога. Имя спрашивается только у новой.
+    if (!skin_.image.empty()) {
+        if (onSave) onSave(skin_, image_);
+        return;
+    }
+    beginNaming();
 }
 
 void SkinWizard::beginNaming() {

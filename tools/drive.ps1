@@ -204,11 +204,16 @@ try {
     }
 }
 finally {
-    if (-not $process.HasExited) { Lower-Window }
+    # Приложение могло закрыться само — «Выйти из читалки» именно это и
+    # делает, — и тогда любому из вызовов ниже не с кем разговаривать. Это
+    # не ошибка прогона.
+    try {
+        if (-not $process.HasExited) { Lower-Window }
 
-    if (-not $Keep -and -not $process.HasExited) {
-        # Сначала вежливо: у приложения есть что сохранить (место чтения).
-        [void]$process.CloseMainWindow()
-        if (-not $process.WaitForExit(3000)) { $process.Kill() }
-    }
+        if (-not $Keep -and -not $process.HasExited) {
+            # Сначала вежливо: у приложения есть что сохранить (место чтения).
+            [void]$process.CloseMainWindow()
+            if (-not $process.WaitForExit(3000)) { $process.Kill() }
+        }
+    } catch {}
 }

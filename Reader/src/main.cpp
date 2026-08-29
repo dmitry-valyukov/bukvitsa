@@ -573,6 +573,10 @@ wxl::Teardown wxl_launched() {
     screen->onAddFolder = addFolder;
     screen->onLibrary = showLibrary;
 
+    // Отмена стартового экрана — выход из приложения: обычное закрытие окна,
+    // со всем, что оно сохраняет по дороге.
+    screen->onExit = [window] { window.close(); };
+
     shelf->onAddBook = addBook;
     shelf->onBack = showStartScreen;
     shelf->onOpen = [library, openBook](std::wstring guid) {

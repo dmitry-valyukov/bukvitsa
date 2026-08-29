@@ -25,6 +25,9 @@ constexpr auto kStagger = 40ms;
 // Кнопки полупрозрачные: под ними картинка, и она должна просвечивать.
 constexpr float kRestingOpacity = 0.92f;
 
+// Лицо кнопки отмены: чуть серее остальных — она уводит, а не ведёт.
+constexpr uint32_t kCancelFace = 0xFFD9D6D2;
+
 // Откуда кнопка приезжает. Одной прозрачности мало — появление «из ничего»
 // читается плоско, а десяток пикселей вверх делает его живым.
 constexpr Vector3 kRiseFrom{0.0f, 14.0f, 0.0f};
@@ -42,6 +45,7 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
         addButton(L"Моя библиотека", 46.0f, 15.0f, &onLibrary),
         addButton(L"Добавить книгу", 46.0f, 15.0f, &onAddBook),
         addButton(L"Добавить каталог", 46.0f, 15.0f, &onAddFolder),
+        addButton(L"Выйти из читалки", 46.0f, 15.0f, &onExit, true),
     };
 
     // Картинка и панель — дети одной ячейки Grid: порядок объявления и есть
@@ -72,6 +76,22 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
     root_.value().add_onLoaded([this](Object const&, RoutedEventArgs&) {
         root_.value().focus(FocusState::Programmatic);
     });
+
+    // Enter — действие по умолчанию, то же, что большая кнопка; Escape —
+    // отмена, то же, что «Выйти из читалки». На пути вниз, чтобы клавиша
+    // работала независимо от того, на какой кнопке стоит фокус.
+    root_.value().add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
+        switch (args.key()) {
+            case VirtualKey::Enter:
+                if (onContinueReading) onContinueReading();
+                break;
+            case VirtualKey::Escape:
+                if (onExit) onExit();
+                break;
+            default: return;
+        }
+        args.handled(true);
+    });
 }
 
 Button StartScreen::addButton(std::wstring_view caption, float tall, float kegel,
@@ -79,7 +99,7 @@ Button StartScreen::addButton(std::wstring_view caption, float tall, float kegel
                               // параметр с именем свойства перекрыл бы одноимённый
                               // тег DSL, и `height = height` стало бы
                               // присваиванием float.
-                              std::function<void()>* action) {
+                              std::function<void()>* action, bool cancel) {
     auto button = Button{
         caption,
         width = kButtonWidth,
@@ -93,6 +113,8 @@ Button StartScreen::addButton(std::wstring_view caption, float tall, float kegel
                 if (*action) (*action)();
             },
     };
+
+    if (cancel) button.background(SolidColorBrush{ARGB{kCancelFace}});
 
     // Подъём идёт по Translation, а НЕ по Offset. Offset — это то, чем XAML
     // расставляет элементы при разметке: анимация захватывает свойство себе,
