@@ -68,6 +68,12 @@ constexpr float kVerticalMargin = 50.0f;
 /// строки прямые — там бумага снимка прижата.
 constexpr float kBulge = 8.0f;
 
+/// Размытие набора под конфигуратором изгиба, в DIP. Лёгкое, не туман:
+/// тексту достаточно отступить на второй план, чтобы направляющие мастера
+/// читались чётче, — но кривые укладывают по строкам, и строки должны
+/// оставаться различимыми.
+constexpr float kPreviewBlur = 1.5f;
+
 /// На чём меряется средняя ширина знака. Не алфавит: в строке книги есть
 /// пробелы и запятые, и они тоже знаки. Обе фразы — панграммы, то есть в
 /// каждой все буквы своего алфавита ровно по разу.
@@ -1681,6 +1687,27 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
         warpPixels_ = pixels;
     }
 
+    // Эффекты — раньше проверки плоскости: плоскому предпросмотру под
+    // конфигуратором ужатие нужно тоже — его слой идёт мимо смещения, но
+    // через ту же вертикальную двойку. Подключение входов здесь не делается:
+    // кто за кем стоит в цепочке, каждый кадр решает drawPage().
+    if (!warpDisplace_) {
+        warpContext_->CreateEffect(CLSID_D2D1DisplacementMap, &warpDisplace_);
+        warpContext_->CreateEffect(CLSID_D2D1Scale, &warpShrink_);
+        if (!warpDisplace_ || !warpShrink_) {
+            warpDisplace_.Reset();
+            warpShrink_.Reset();
+            return false;
+        }
+        warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_X_CHANNEL_SELECT,
+                                D2D1_CHANNEL_SELECTOR_R);
+        warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_Y_CHANNEL_SELECT,
+                                D2D1_CHANNEL_SELECTOR_G);
+        warpShrink_->SetValue(D2D1_SCALE_PROP_SCALE, D2D1::Vector2F(1.0f, 0.5f));
+        warpShrink_->SetValue(D2D1_SCALE_PROP_INTERPOLATION_MODE,
+                              D2D1_SCALE_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
+    }
+
     // Обложка с нетронутыми точками — плоская: гнуть нечего, полоса рисуется
     // напрямую. Ответ запомнен, чтобы не пересчитывать кривые на каждый кадр;
     // сбрасывают его смена темы, реестра обложек и размера полосы.
@@ -1759,24 +1786,6 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
             return false;
     }
 
-    if (!warpDisplace_) {
-        warpContext_->CreateEffect(CLSID_D2D1DisplacementMap, &warpDisplace_);
-        warpContext_->CreateEffect(CLSID_D2D1Scale, &warpShrink_);
-        if (!warpDisplace_ || !warpShrink_) {
-            warpDisplace_.Reset();
-            warpShrink_.Reset();
-            return false;
-        }
-        warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_X_CHANNEL_SELECT,
-                                D2D1_CHANNEL_SELECTOR_R);
-        warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_Y_CHANNEL_SELECT,
-                                D2D1_CHANNEL_SELECTOR_G);
-        warpShrink_->SetInputEffect(0, warpDisplace_.Get());
-        warpShrink_->SetValue(D2D1_SCALE_PROP_SCALE, D2D1::Vector2F(1.0f, 0.5f));
-        warpShrink_->SetValue(D2D1_SCALE_PROP_INTERPOLATION_MODE,
-                              D2D1_SCALE_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
-    }
-
     warpDisplace_->SetInput(0, warpLayer_.Get());
     warpDisplace_->SetInput(1, warpMap_.Get());
     // Размах — в пикселях слоя: наибольшее отклонение краёв в долях высоты —
@@ -1785,6 +1794,19 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     // середины не дальше половины размаха.
     warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_SCALE,
                             4.0f * warpAmplitude_ * height_ * scale_);
+    return true;
+}
+
+bool BookView::ensureBlur() {
+    if (warpBlur_) return true;
+    if (!warpContext_) return false;
+
+    warpContext_->CreateEffect(CLSID_D2D1GaussianBlur, &warpBlur_);
+    if (!warpBlur_) return false;
+
+    // HARD вместо мягкой кромки по умолчанию: у границ полосы размытие не
+    // должно подмешивать прозрачность из-за края слоя.
+    warpBlur_->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_BORDER_MODE_HARD);
     return true;
 }
 
@@ -1800,7 +1822,16 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     }
 
     drawBackdrop(context, width, height);
-    if (!ensureWarp(context)) {
+
+    const bool warped = ensureWarp(context);
+
+    // Под конфигуратором изгиба набор слегка размывается: текст отступает на
+    // второй план, и направляющие мастера читаются чётче. Ещё не согнутая —
+    // плоская — обложка идёт тем же слоем, но мимо смещения: размытию нужен
+    // образ страницы, а прямому рисунку в поверхность его не дать.
+    const bool blurred = preview_ && (warped || warpFlat_) && ensureBlur();
+
+    if (!warped && !blurred) {
         drawPageContent(context, width, height);
         return;
     }
@@ -1814,15 +1845,30 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     drawPageContent(warpContext_.Get(), width, height);
     if (FAILED(warpContext_->EndDraw())) return;   // фон с фотографией уже есть
 
+    // Хвост цепочки собирается по месту: изгиб, если есть что гнуть, потом
+    // ужатие двойной высоты, потом размытие, если открыт конфигуратор.
+    if (warped) {
+        warpShrink_->SetInputEffect(0, warpDisplace_.Get());
+    } else {
+        warpShrink_->SetInput(0, warpLayer_.Get());
+    }
+
+    ID2D1Effect* tail = warpShrink_.Get();
+    if (blurred) {
+        warpBlur_->SetInputEffect(0, tail);
+        warpBlur_->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, kPreviewBlur * scale_);
+        tail = warpBlur_.Get();
+    }
+
     // Выход эффектов — в пикселях поверхности, поэтому масштаб DIP→пиксели из
     // трансформа на время вынимается: остаётся только смещение атласа.
     D2D1_MATRIX_3X2_F outer{};
     context->GetTransform(&outer);
     context->SetTransform(D2D1::Matrix3x2F::Scale(1.0f / scale_, 1.0f / scale_) *
                           *D2D1::Matrix3x2F::ReinterpretBaseType(&outer));
-    Microsoft::WRL::ComPtr<ID2D1Image> warped;
-    warpShrink_->GetOutput(&warped);
-    context->DrawImage(warped.Get());
+    Microsoft::WRL::ComPtr<ID2D1Image> page;
+    tail->GetOutput(&page);
+    context->DrawImage(page.Get());
     context->SetTransform(*D2D1::Matrix3x2F::ReinterpretBaseType(&outer));
 }
 
