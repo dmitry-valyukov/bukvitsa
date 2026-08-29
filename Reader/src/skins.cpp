@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 // Заголовки проекта после стандартных: store.h несёт импорт, после которого
 // стандартный заголовок MSVC уже не принимает. Свой первым.
@@ -69,19 +70,39 @@ float edgeAt(const EdgeCurve& curve, float u) {
     if (u <= curve.x[0]) return curve.y[0];
     if (u >= curve.x[last]) return curve.y[last];
 
-    std::size_t segment = 0;
-    while (u > curve.x[segment + 1]) ++segment;
+    // Кривая Безье четвёртой степени: пять точек мастера — её управляющая
+    // ломаная. Кривая проходит только через крайние точки, средние тянут её к
+    // себе — зато она не выскакивает за свою ломаную, как это делал между
+    // точками Катмулл-Ром, и край выходит спокойным при любой расстановке.
+    const auto at = [&curve](float t) {
+        const float s = 1.0f - t;
+        const float w0 = s * s * s * s;
+        const float w1 = 4.0f * s * s * s * t;
+        const float w2 = 6.0f * s * s * t * t;
+        const float w3 = 4.0f * s * t * t * t;
+        const float w4 = t * t * t * t;
+        return std::pair{w0 * curve.x[0] + w1 * curve.x[1] + w2 * curve.x[2] + w3 * curve.x[3] +
+                             w4 * curve.x[4],
+                         w0 * curve.y[0] + w1 * curve.y[1] + w2 * curve.y[2] + w3 * curve.y[3] +
+                             w4 * curve.y[4]};
+    };
 
-    // Катмулл-Ром по четвёрке соседей; у крайних сегментов сосед за краем —
-    // сама крайняя точка, обычное «зажатие» концов.
-    const float t = (u - curve.x[segment]) / (curve.x[segment + 1] - curve.x[segment]);
-    const float p0 = curve.y[segment == 0 ? 0 : segment - 1];
-    const float p1 = curve.y[segment];
-    const float p2 = curve.y[segment + 1];
-    const float p3 = curve.y[std::min(segment + 2, last)];
-
-    return 0.5f * (2.0f * p1 + (-p0 + p2) * t + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t * t +
-                   (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t * t * t);
+    // Кривая параметрическая, а спрашивают её по столбцу u, поэтому t ищется
+    // по x бисекцией: иксы точек идут по порядку (клампы перетаскивания это
+    // держат), значит x(t) монотонен. Двадцать делений — миллионная доля
+    // ширины, карте хватает с запасом; замкнутой формулы у корня четвёртой
+    // степени всё равно нет.
+    float low = 0.0f;
+    float high = 1.0f;
+    for (int step = 0; step < 20; ++step) {
+        const float mid = 0.5f * (low + high);
+        if (at(mid).first < u) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    return at(0.5f * (low + high)).second;
 }
 
 void Skins::loadFrom(std::string xml) {
