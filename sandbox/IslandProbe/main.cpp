@@ -33,6 +33,7 @@
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Content.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
@@ -167,13 +168,29 @@ wuc::CompositionBrush splashBrush() {
 /// Дерево карточки: полупрозрачная скруглённая подложка с полем вокруг — по
 /// тому, что видно в поле и сквозь подложку, прозрачность грунта острова
 /// читается с одного взгляда.
+///
+/// Тема задана светлой явно: остров наследует тему приложения Windows, и в
+/// тёмной кнопка сливается с тёмной подложкой — стартовый экран Буквицы
+/// одет так же, светлые кнопки на тёмной карточке.
 xaml::UIElement cardContent() {
     xaml::Controls::Button button;
     button.Content(winrt::box_value(L"Нажми меня"));
+    button.MinWidth(300);
+    button.MinHeight(48);
+    button.FontWeight({600});
     button.HorizontalAlignment(xaml::HorizontalAlignment::Center);
     button.VerticalAlignment(xaml::VerticalAlignment::Center);
+    button.Click([](winrt::Windows::Foundation::IInspectable const& sender,
+                    xaml::RoutedEventArgs const&) {
+        // Живой отклик — доказательство, что ввод дошёл до контрола.
+        static int presses = 0;
+        ++presses;
+        sender.as<xaml::Controls::Button>().Content(
+            winrt::box_value(L"Нажата: " + winrt::to_hstring(presses)));
+    });
 
     xaml::Controls::Border card;
+    card.RequestedTheme(xaml::ElementTheme::Light);
     card.CornerRadius({12, 12, 12, 12});
     card.Margin({24, 24, 24, 24});
     card.Padding({16, 16, 16, 16});
@@ -223,7 +240,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
             break;
 
         case WM_DESTROY:
-            ::PostQuitMessage(0);
+            // Выход из цикла диспетчера, а не PostQuitMessage: цикл — его.
+            g_uiQueue.DispatcherQueue().EnqueueEventLoopExit();
             break;
     }
     return ::DefWindowProcW(hwnd, message, wparam, lparam);
@@ -284,10 +302,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ::ShowWindow(hwnd, show);
     ::UpdateWindow(hwnd);
 
-    MSG msg;
-    while (::GetMessageW(&msg, nullptr, 0, 0)) {
-        ::TranslateMessage(&msg);
-        ::DispatchMessageW(&msg);
-    }
-    return static_cast<int>(msg.wParam);
+    // Цикл диспетчера WinAppSDK, а не голый GetMessage: он сам транслирует
+    // сообщения островам, и только с ним у карточки живёт клавиатура —
+    // Tab, Enter, пробел на кнопке.
+    g_uiQueue.DispatcherQueue().RunEventLoop();
+    return 0;
 }
