@@ -4,12 +4,6 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="../ConsoleApplication1/ConsoleApplication1.vcxproj" Id="acb8c9ef-97dd-4843-b97e-1b5230edcc2d">
-    <Platform Solution="*|ARM64" Project="x64" />
-  </Project>
-  <Project Path="../ConsoleApplication2/ConsoleApplication2.vcxproj" Id="5b35afb2-069c-4b7d-966f-00ec73b3a056">
-    <Platform Solution="*|ARM64" Project="x64" />
-  </Project>
   <Project Path="WindowsProject1.vcxproj" Id="384ffed8-fe6e-4290-9d2c-ddf9c5de6f98">
     <Platform Solution="*|ARM64" Project="x64" />
   </Project>

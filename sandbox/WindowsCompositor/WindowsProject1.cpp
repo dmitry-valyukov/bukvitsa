@@ -6,6 +6,7 @@
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "windowscodecs.lib")
 
 using namespace winrt;
 using namespace Windows::UI::Composition;
@@ -24,6 +25,11 @@ static ID2D1Factory1 * g_d2dFactory { nullptr };
 static IDWriteFactory * g_dwriteFactory { nullptr };
 static CompositionGraphicsDevice g_graphicsDevice { nullptr };
 static SpriteVisual g_textVisual { nullptr }; // Визуал, который будет содержать текст
+
+// Картинка заднего фона. Поверхность под неё заводится РАЗ, в натуральную
+// величину снимка, и с размером окна не меняется: подгонять её под окно --
+// дело кисти, то есть композитора.
+static const wchar_t * BACKGROUND_IMAGE = L"M:\\Bukvitsa\\Reader\\src\\Assets\\book-1.png";
 
 static CompositionSpriteShape g_buttonShape { nullptr };
 static bool g_isMouseOver { false }; // Флаг: находится ли мышь над кнопкой сейчас
@@ -181,15 +187,104 @@ CompositionSurfaceBrush CreateTextBrush(const wchar_t * text, Size size) {
     return surfaceBrush;
 }
 
+// Картинка с диска -- в кисть композитора. Тот же путь, что и у
+// CreateTextBrush: своя CompositionDrawingSurface, D2D внутри BeginDraw,
+// CreateSurfaceBrush поверх. Разница только в источнике пикселей -- WIC
+// вместо DirectWrite.
+//
+// Главное здесь -- размер поверхности. Он равен размеру САМОГО СНИМКА, а не
+// окна, и потому не пересоздаётся никогда. Растяжку под окно делает Stretch у
+// кисти, то есть композитор на своём потоке. Ради этого всё и затевалось: при
+// перетаскивании края окна приложению остаётся выставить одно число --
+// Visual::Size, -- и ни одного пикселя не перерисовывается.
+CompositionSurfaceBrush CreateImageBrush(const wchar_t * path) {
+    IWICImagingFactory * wic { nullptr };
+    winrt::check_hresult(CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+        CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)));
+
+    IWICBitmapDecoder * decoder { nullptr };
+    winrt::check_hresult(wic->CreateDecoderFromFilename(path, nullptr, GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad, &decoder));
+
+    IWICBitmapFrameDecode * frame { nullptr };
+    winrt::check_hresult(decoder->GetFrame(0, &frame));
+
+    // 32bppPBGRA -- то, что D2D берёт без пересчёта.
+    IWICFormatConverter * converter { nullptr };
+    winrt::check_hresult(wic->CreateFormatConverter(&converter));
+    winrt::check_hresult(converter->Initialize(frame, GUID_WICPixelFormat32bppPBGRA,
+        WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeMedianCut));
+
+    UINT pixelWidth { 0 };
+    UINT pixelHeight { 0 };
+    winrt::check_hresult(converter->GetSize(&pixelWidth, &pixelHeight));
+
+    Size surfaceSize { static_cast<float>(pixelWidth), static_cast<float>(pixelHeight) };
+    CompositionDrawingSurface surface = g_graphicsDevice.CreateDrawingSurface(
+        surfaceSize,
+        Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+        Windows::Graphics::DirectX::DirectXAlphaMode::Premultiplied);
+
+    auto surfaceInterop =
+        surface.as<ABI::Windows::UI::Composition::ICompositionDrawingSurfaceInterop>();
+    ID2D1DeviceContext * d2dContext { nullptr };
+    POINT offset;
+    winrt::check_hresult(surfaceInterop->BeginDraw(nullptr, __uuidof(ID2D1DeviceContext),
+        (void **)&d2dContext, &offset));
+
+    // Поверхность лежит в общем атласе, и смещение в нём обязано войти в
+    // трансформацию -- иначе снимок ляжет поверх чужой поверхности.
+    d2dContext->SetTransform(D2D1::Matrix3x2F::Translation(
+        static_cast<float>(offset.x), static_cast<float>(offset.y)));
+    //d2dContext->Clear(D2D1::ColorF(0, 0, 0, 0));
+
+    ID2D1Bitmap1 * bitmap { nullptr };
+    if(SUCCEEDED(d2dContext->CreateBitmapFromWicBitmap(converter, nullptr, &bitmap))) {
+        d2dContext->DrawBitmap(bitmap,
+            D2D1::RectF(0.0f, 0.0f, surfaceSize.Width, surfaceSize.Height), 1.0f,
+            //D2D1_BITMAP_INTERPOLATION_MODE_LINEAR
+          D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+        );
+    }
+
+    surfaceInterop->EndDraw();
+
+    if(bitmap) bitmap->Release();
+    if(d2dContext) d2dContext->Release();
+    if(converter) converter->Release();
+    if(frame) frame->Release();
+    if(decoder) decoder->Release();
+    if(wic) wic->Release();
+
+    auto surfaceBrush = g_compositor.CreateSurfaceBrush(surface);
+
+    // Как background-size: cover -- снимок покрывает окно целиком, лишнее
+    // уходит за края. Меняется только это свойство кисти, поверхность --
+    // никогда.
+    //surfaceBrush.Stretch(CompositionStretch::UniformToFill);
+    surfaceBrush.Stretch(CompositionStretch::Fill);
+    return surfaceBrush;
+}
+
 void CreateInterface() {
     if(!g_target) return;
 
     g_rootVisual = g_compositor.CreateContainerVisual();
     g_target.Root(g_rootVisual);
 
-    // 1. Темно-серый фон окна
+    // 1. Картинка на задний фон окна
     g_backgroundVisual = g_compositor.CreateSpriteVisual();
-    g_backgroundVisual.Brush(g_compositor.CreateColorBrush(winrt::Windows::UI::Color { 255, 255, 255, 255 }));
+
+    // Снимок не читается -- окно остаётся серым, а не падает: песочник для
+    // того и нужен, чтобы дойти до окна и посмотреть на него.
+    try {
+        g_backgroundVisual.Brush(CreateImageBrush(BACKGROUND_IMAGE));
+    }
+    catch(winrt::hresult_error const &) {
+        g_backgroundVisual.Brush(g_compositor.CreateColorBrush(
+            winrt::Windows::UI::Color { 255, 192, 192, 192 }));
+    }
+
     g_rootVisual.Children().InsertAtTop(g_backgroundVisual);
 
     // 2. ОБЩИЙ КОНТЕЙНЕР ДЛЯ КНОПКИ
@@ -345,6 +440,11 @@ void UpdateInterfaceLayout(float windowWidth, float windowHeight) {
     if(windowWidth <= 0.0f || windowHeight <= 0.0f) return;
 
     if(g_backgroundVisual) {
+        // Всё, что делает приложение на новый размер окна: одно свойство
+        // визуала. Поверхность со снимком не трогается -- ни пересоздания, ни
+        // перерисовки, ни единого пикселя через D2D. Если картинка всё равно
+        // отстаёт от края окна -- значит, отстаёт сама подача кадра
+        // композитору, и рисование тут ни при чём.
         g_backgroundVisual.Size(float2 { windowWidth, windowHeight });
     }
     // Сам g_buttonContainer центрируется автоматически через RelativeOffsetAdjustment
