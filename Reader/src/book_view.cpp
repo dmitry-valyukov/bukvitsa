@@ -1667,7 +1667,7 @@ void BookView::updateBackdrop() {
         backdrop_.value().isVisible(false);
         return;
     }
-ё
+
     if (!backdropSurface_) {
         UINT pixelWidth = 0;
         UINT pixelHeight = 0;
