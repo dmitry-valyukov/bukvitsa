@@ -208,6 +208,9 @@ endif()
 # Черновики. В сборке — потому что черновик, который не собирается, ничего не
 # проверяет: отдельной цели, которую надо назвать явно, для этого хватает.
 add_subdirectory(sandbox/AsyncScheme)
+if(WIN32)
+    add_subdirectory(sandbox/IslandProbe)
+endif()
 
 # ---- Документация ----
 #
