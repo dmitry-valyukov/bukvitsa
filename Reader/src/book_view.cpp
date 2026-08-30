@@ -11,6 +11,10 @@
 
 #include <d2d1effects.h>
 
+// Родной размер снимка подложки в пикселях — до создания поверхности,
+// поэтому нужен настоящий интерфейс WIC, а не только его объявление.
+#include <wincodec.h>
+
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
 // он единственный тянет за собой стандартные заголовки, которых нет здесь.
@@ -256,6 +260,15 @@ Grid BookView::buildTree() {
     // обрезается по прямоугольнику страницы, а не по описанному вокруг него.
     sheets_ = compositor_.createContainerVisual();
     sheets_.value().clip(compositor_.createInsetClip());
+
+    // Подложка темы — в самом низу, под обоими листами: у неё тот же клип
+    // контейнера, а видна она там, где сверху ни строки, ни бумаги. Кисть
+    // подводится позже, вместе с первым снимком, — до тех пор визуал прячет
+    // сама видимость.
+    SpriteVisual backdrop = compositor_.createSpriteVisual();
+    backdrop.isVisible(false);
+    sheets_.value().children().insertAtBottom(backdrop);
+    backdrop_ = backdrop;
 
     for (int index = 0; index < 2; ++index) {
         SpriteVisual sheet = compositor_.createSpriteVisual();
@@ -564,6 +577,7 @@ void BookView::setTheme(int index) {
         warpLayer_.Reset();
         warpPixels_ = {};
     }
+    updateBackdrop();
     redraw();
 }
 
@@ -577,9 +591,10 @@ void BookView::setSkins(std::vector<Skin> skins) {
     // Пересохранённая обложка могла сменить и снимок, и кривые.
     backdropLoaded_.clear();
     backdropSource_.Reset();
-    backdropBitmap_.Reset();
+    backdropSurface_.reset();
     warpMap_.Reset();
     warpFlat_ = false;
+    updateBackdrop();
     redraw();
 }
 
@@ -600,6 +615,7 @@ void BookView::setPreview(const Skin* skin, const std::filesystem::path& image) 
     // Карта держит форму прежних кривых, а подложка — прежний снимок.
     warpMap_.Reset();
     warpFlat_ = false;
+    updateBackdrop();
     redraw();
 }
 
@@ -697,6 +713,8 @@ bool BookView::applySize(float width, float height, float scale) {
         sheet.centerPoint({0.0f, height * 0.5f, 0.0f});
     }
     sheets_.value().size({width, height});
+    backdrop_.value().size({width, height});
+
     // Полоска тени меряется целым разворотом, а до нужной доли её ужимает
     // Scale: ширина тени зависит от корешка, а корешок при этом вызове ещё
     // может быть не посчитан.
@@ -1632,29 +1650,60 @@ const fb3::Node* BookView::noteAt(Point point, Point& anchor) const {
     return nullptr;
 }
 
-void BookView::drawBackdrop(ID2D1DeviceContext* context, float width, float height) {
+void BookView::updateBackdrop() {
     const std::filesystem::path wanted = backdropFile();
-    if (wanted.empty()) return;
+    if (wanted.empty()) {
+        backdrop_.value().isVisible(false);
+        return;
+    }
 
     if (backdropLoaded_ != wanted.native()) {
         backdropSource_ = decodeImage(wanted);
-        backdropBitmap_.Reset();
         backdropLoaded_ = wanted.native();
+        backdropSurface_.reset();   // старая поверхность — под старый снимок
     }
 
-    if (!backdropBitmap_ && backdropSource_) {
-        if (FAILED(context->CreateBitmapFromWicBitmap(backdropSource_.Get(), nullptr,
-                                                      &backdropBitmap_)))
+    if (!backdropSource_) {
+        backdrop_.value().isVisible(false);
+        return;
+    }
+ё
+    if (!backdropSurface_) {
+        UINT pixelWidth = 0;
+        UINT pixelHeight = 0;
+        if (FAILED(backdropSource_->GetSize(&pixelWidth, &pixelHeight)) || pixelWidth == 0 ||
+            pixelHeight == 0) {
             backdropSource_.Reset();   // не вышло — больше не пытаемся
+            backdrop_.value().isVisible(false);
+            return;
+        }
+
+        // Поверхность заводится в размере снимка, а не полосы: он не
+        // меняется с размером окна, и растягивать его до нового размера —
+        // дело кисти ниже, а не пересоздания поверхности на каждый WM_SIZE.
+        const float pixelW = static_cast<float>(pixelWidth);
+        const float pixelH = static_cast<float>(pixelHeight);
+        backdropSurface_.emplace(compositor_, SizeInt32{static_cast<int32_t>(pixelWidth),
+                                                        static_cast<int32_t>(pixelHeight)});
+        backdropSurface_->draw([this, pixelW, pixelH](ID2D1DeviceContext* context) {
+            Microsoft::WRL::ComPtr<ID2D1Bitmap1> bitmap;
+            if (FAILED(context->CreateBitmapFromWicBitmap(backdropSource_.Get(), nullptr,
+                                                          &bitmap)))
+                return;
+            context->DrawBitmap(bitmap.Get(), D2D1::RectF(0.0f, 0.0f, pixelW, pixelH), 1.0f,
+                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        });
+
+        // На всю полосу, без сохранения пропорций: снимок скомпонован под
+        // полосу — книга в середине, стол по краям, — и кадрирование ради
+        // пропорций резало бы именно книгу. Растяжение бумажной фактуры глаз
+        // не ловит; тянет его теперь кисть композитора, а не DrawBitmap.
+        CompositionSurfaceBrush brush = backdropSurface_->brush();
+        brush.stretch(CompositionStretch::Fill);
+        backdrop_.value().brush(brush);
     }
 
-    if (!backdropBitmap_) return;
-
-    // На всю полосу, без сохранения пропорций: снимок скомпонован под полосу —
-    // книга в середине, стол по краям, — и кадрирование ради пропорций резало
-    // бы именно книгу. Растяжение бумажной фактуры глаз не ловит.
-    context->DrawBitmap(backdropBitmap_.Get(), D2D1::RectF(0.0f, 0.0f, width, height), 1.0f,
-                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    backdrop_.value().isVisible(true);
 }
 
 bool BookView::ensureWarp(ID2D1DeviceContext* context) {
@@ -1811,17 +1860,16 @@ bool BookView::ensureBlur() {
 }
 
 void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) {
-    context->Clear(paper().background);
-
-    // Ровные темы рисуются как прежде, напрямую. С фотографией содержимое
-    // идёт через слой изгиба: бумага на снимке выпуклая, и плоские строки
-    // на ней выглядели бы наклейкой.
+    // Ровные темы кроют лист целиком, как и раньше. У темы с подложкой лист
+    // остаётся прозрачным везде, где нет ни строки, ни следа эффектов, — под
+    // ним лежит собственный визуал подложки, и закрасить его тем же цветом
+    // значило бы спрятать от читателя.
     if (backdropFile().empty()) {
+        context->Clear(paper().background);
         drawPageContent(context, width, height);
         return;
     }
-
-    drawBackdrop(context, width, height);
+    context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
     const bool warped = ensureWarp(context);
 
@@ -1987,8 +2035,8 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
 
 void BookView::drawInvitation(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = paper();
-    context->Clear(shade.background);
-    drawBackdrop(context, width, height);
+    context->Clear(backdropFile().empty() ? shade.background
+                                          : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
     IDWriteFactory* const dwrite = dwriteFactory();
     if (!dwrite) return;

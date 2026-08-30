@@ -46,7 +46,7 @@ const winrt::Windows::UI::Color COLOR_HOVER { 255, 212, 212, 255 }; // Свет�
 
 using Point = winrt::Windows::Foundation::Point;
 
-struct Offset : public Point { 
+struct Offset : public Point {
     Offset(float x = 0, float y = 0) : Point { x, y } {}
     operator float3() {
         return float3 { X, Y, 0.0f };
@@ -461,7 +461,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     winrt::init_apartment(winrt::apartment_type::single_threaded);
 
     WNDCLASSEX wcex = { sizeof(WNDCLASSEX) };
-    wcex.style = CS_HREDRAW | CS_VREDRAW;
+    //wcex.style = CS_HREDRAW | CS_VREDRAW;
     wcex.lpfnWndProc = WndProc;
     wcex.hInstance = hInstance;
     wcex.lpszClassName = L"WinRtDesktopClass";
@@ -501,7 +501,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch(message) {
     case WM_ERASEBKGND:
-        return 1;
+        return 1; // В классическом возвращают 1, чтобы окно не очщалось ефолтной кистью окна.
 
     case WM_LBUTTONDOWN:
     {
