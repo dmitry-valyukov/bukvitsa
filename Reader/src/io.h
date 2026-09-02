@@ -62,8 +62,6 @@ public:
     /// Доводит до конца то, что успело вернуться, и останавливает поток.
     void stop();
 
-    wxl::async::sta_loop& loop() { return loop_; }
-
     /// Берёт корневую корутину под присмотр: держит её кадр, пока она не
     /// кончится, и отпускает, когда кончилась.
     ///
@@ -106,7 +104,6 @@ private:
     /// кончиться, и ни разу больше.
     void collect();
 
-    wxl::async::sta_loop loop_;
     std::vector<wxl::async::task> running_;
     bool started_ = false;
 };

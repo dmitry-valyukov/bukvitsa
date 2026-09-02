@@ -74,7 +74,7 @@ path poolPath(const std::filesystem::path& path) {
     return wxl::core::path(std::wstring_view(path.native()));
 }
 
-Io::Io() : loop_("Буквица: ввод-вывод") {}
+Io::Io() = default;
 
 Io::~Io() {
     stop();
@@ -86,17 +86,17 @@ void Io::start(const wxl::DispatcherQueue& queue) {
     // однопоточны, а очередь под ними agile.
     const wxl::UiThread ui{queue};
 
-    loop_.wake_with([this, ui]() noexcept {
-        // Рабочий поток: всё, что тут можно, -- попросить интерфейсный
-        // разобрать вернувшееся. Не получилось (очередь закрывается) --
-        // значит приложение уходит, и разбирать уже некому.
-        ui.post([this] {
-            loop_.run_pending();
-            collect();
-        });
-    });
-
-    loop_.start();
+    wxl::async::sta_loop::start_driven(
+        [this, ui]() noexcept {
+            // Рабочий поток: всё, что тут можно, -- попросить интерфейсный
+            // разобрать вернувшееся. Не получилось (очередь закрывается) --
+            // значит приложение уходит, и разбирать уже некому.
+            ui.post([this] {
+                wxl::async::sta_loop::run_pending();
+                collect();
+            });
+        },
+        "Буквица: ввод-вывод");
 
     started_ = true;
 }
@@ -105,7 +105,7 @@ void Io::stop() {
     if (!started_) return;
 
     started_ = false;
-    loop_.stop();
+    wxl::async::sta_loop::stop();
 
     // Корутины, чьи операции не успели вернуться, так и остались
     // приостановленными: возобновлять их некому и незачем. Их кадры уходят
@@ -135,22 +135,22 @@ void Io::collect() {
 }
 
 awaitable<std::optional<std::string>> Io::readFile(const std::filesystem::path& file_path) {
-    return loop_.async_call([p = poolPath(file_path)] { return readWhole(p); });
+    return wxl::async::sta_loop::async_call([p = poolPath(file_path)] { return readWhole(p); });
 }
 
 awaitable<bool> Io::writeFile(const std::filesystem::path& file_path, std::string content) {
     std::filesystem::path temporary = file_path;
     temporary += L".tmp";
 
-    return loop_.async_call([p = poolPath(file_path), parent = poolPath(file_path.parent_path()),
-                             tmp = poolPath(temporary),
-                             text = std::move(content)]() mutable {
-        return writeWhole(p, parent, tmp, text);
-    });
+    return wxl::async::sta_loop::async_call(
+        [p = poolPath(file_path), parent = poolPath(file_path.parent_path()),
+         tmp = poolPath(temporary), text = std::move(content)]() mutable {
+            return writeWhole(p, parent, tmp, text);
+        });
 }
 
 awaitable<bool> Io::fileExists(const std::filesystem::path& file_path) {
-    return loop_.async_call([p = poolPath(file_path)] {
+    return wxl::async::sta_loop::async_call([p = poolPath(file_path)] {
         const DWORD attributes = ::GetFileAttributesW(p.c_str());
 
         return attributes != INVALID_FILE_ATTRIBUTES &&
@@ -159,7 +159,7 @@ awaitable<bool> Io::fileExists(const std::filesystem::path& file_path) {
 }
 
 awaitable<std::uint64_t> Io::fileSize(const std::filesystem::path& file_path) {
-    return loop_.async_call([p = poolPath(file_path)]() -> std::uint64_t {
+    return wxl::async::sta_loop::async_call([p = poolPath(file_path)]() -> std::uint64_t {
         file source = file::open_read(p.c_str());
 
         return source.size().value_or(0);
@@ -168,7 +168,7 @@ awaitable<std::uint64_t> Io::fileSize(const std::filesystem::path& file_path) {
 
 awaitable<std::vector<DirectoryEntry>> Io::list(const std::filesystem::path& directory_path,
                                                 std::wstring_view mask) {
-    return loop_.async_call(
+    return wxl::async::sta_loop::async_call(
         [pattern = poolPath(directory_path) / mask]() -> std::vector<DirectoryEntry> {
             std::vector<DirectoryEntry> found;
 
