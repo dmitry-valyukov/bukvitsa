@@ -66,7 +66,7 @@ void main_loop::wait_for_work()
     // Протокол ожидания ведём сами — так и написано в mpsc_channel про тех, кто
     // ждёт не только его: объявляем, что засыпаем, и с этого мгновения писатель
     // обязан нас будить.
-    inbox_.enter_waiting();
+    inbox_.arm();
 
     // Обязательная перепроверка, а не оптимизация: между try_receive в run_once
     // и объявлением о сне писатель мог положить элемент, застать нас бодрыми и
@@ -75,7 +75,7 @@ void main_loop::wait_for_work()
 
     std::unique_ptr<continuation> item;
     if (inbox_.try_receive(item)) {
-        inbox_.exit_waiting();
+        inbox_.disarm();
         item->work();
         return;
     }
@@ -86,7 +86,7 @@ void main_loop::wait_for_work()
     HANDLE wait_handle = inbox_.wait_handle();
     ::MsgWaitForMultipleObjects(1, &wait_handle, FALSE, INFINITE, QS_ALLINPUT);
 
-    inbox_.exit_waiting();
+    inbox_.disarm();
 }
 
 }  // namespace bukvitsa::io
