@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <chrono>
 
-#include "card.h"
+#include "button_card.h"
 
 namespace bukvitsa::reader {
 

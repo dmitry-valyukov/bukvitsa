@@ -12,7 +12,7 @@ add_executable(Reader WIN32
     src/start_screen.cpp
     src/book.cpp
     src/book_view.cpp
-    src/card.cpp
+    src/button_card.cpp
     src/library_screen.cpp
     src/reader_panel.cpp
     src/note_popup.cpp
@@ -27,7 +27,7 @@ add_executable(Reader WIN32
     src/file_dialog.cpp
     src/book.h
     src/book_view.h
-    src/card.h
+    src/button_card.h
     src/file_dialog.h
     src/imaging.h
     src/io.h

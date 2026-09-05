@@ -4,6 +4,7 @@
 // декларативной поверхности не должен стоить потребителю разбора проекции.
 
 #include "aliases.h"
+#include "Card.h"
 #include "generated/Members.h"
 #include "generated/Microsoft.UI.Composition.h"
 #include "generated/Microsoft.UI.Xaml.Media.Enums.h"

@@ -10,7 +10,7 @@
 // Заголовки проекта после стандартных. Свой первым.
 #include "skin_wizard.h"
 
-#include "card.h"
+#include "button_card.h"
 #include "imaging.h"
 
 namespace bukvitsa::reader {
