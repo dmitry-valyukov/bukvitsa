@@ -10,7 +10,6 @@
 // Заголовки проекта после стандартных. Свой первым.
 #include "skin_wizard.h"
 
-#include "button_card.h"
 #include "imaging.h"
 
 namespace bukvitsa::reader {
@@ -26,8 +25,8 @@ constexpr uint32_t kInk = 0xFFE8E4DC;
 constexpr uint32_t kEdge = 0x33FFFFFF;
 
 // Кнопки — как на стартовом экране: та же ширина, та же полупрозрачность,
-// под ними должна просвечивать страница; где им стоять, знает карточка
-// (card.h). Отмена — чуть серее остальных, она уводит, а не ведёт.
+// под ними должна просвечивать страница; где им стоять, сказано у самой
+// карточки. Отмена — чуть серее остальных, она уводит, а не ведёт.
 constexpr float kButtonWidth = 300.0f;
 constexpr float kRestingOpacity = 0.92f;
 constexpr uint32_t kCancelFace = 0xFFD9D6D2;
@@ -111,13 +110,18 @@ void SkinWizard::buildTree() {
     // экрана: «Сохранить» увеличена, как «Продолжить чтение», — это действие
     // по умолчанию, его же зовёт Enter; «Выйти из мастера обложек» — отмена,
     // её зовёт Escape.
-    auto buttons = buttonCard(StackPanel{
-        overlayButton(L"Сохранить", 72.0f, 19.0f, false, &SkinWizard::saveRequested),
-        overlayButton(L"Выбрать другое изображение", 46.0f, 15.0f, false,
-                      &SkinWizard::chooseAnother),
-        overlayButton(L"Выйти из мастера обложек", 46.0f, 15.0f, true,
-                      &SkinWizard::exitWizard),
-    });
+    auto buttons = Built<OverlayCard>{
+        hAlign.right,
+        vAlign.top,
+        Margin{0, 64, 72, 0},
+        StackPanel{
+            overlayButton(L"Сохранить", 72.0f, 19.0f, false, &SkinWizard::saveRequested),
+            overlayButton(L"Выбрать другое изображение", 46.0f, 15.0f, false,
+                          &SkinWizard::chooseAnother),
+            overlayButton(L"Выйти из мастера обложек", 46.0f, 15.0f, true,
+                          &SkinWizard::exitWizard),
+        },
+    };
 
     nameBox_ = TextBox{width = 320.0};
 
