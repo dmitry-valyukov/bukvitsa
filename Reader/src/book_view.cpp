@@ -16,8 +16,13 @@
 #include <wincodec.h>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
-// а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
-// он единственный тянет за собой стандартные заголовки, которых нет здесь.
+// а стандартный заголовок после импорта MSVC уже не принимает. CompositionWindow
+// первым из них: у него свои стандартные заголовки, а после импорта их не
+// подключить; сам он к импорту не ведёт.
+#include "CompositionWindow.h"
+
+// Свой следующим: он единственный тянет за собой стандартные заголовки,
+// которых нет здесь, — и уже он ведёт к импорту модуля книги.
 #include "book_view.h"
 
 #include "imaging.h"
@@ -223,8 +228,13 @@ bool controlHeld() {
 
 }  // namespace
 
-BookView::BookView(const Compositor& compositor, const DispatcherQueue& queue)
-    : compositor_(compositor), queue_(queue), note_(compositor) {
+BookView::BookView(CompositionWindow& window)
+    : window_(&window),
+      compositor_(window.compositor()),
+      queue_(window.dispatcherQueue()),
+      // Всплывашка сноски — XAML-остров, её рисунок висит в дереве острова, а не
+      // на сцене: ей нужен композитор острова, а не окна.
+      note_(window.chromeCompositor()) {
     root_ = buildTree();
 
     IDWriteFactory* const dwrite = dwriteFactory();
@@ -247,12 +257,6 @@ Grid BookView::buildTree() {
     // называются как свойства (width, height, margin), и на уровне файла они
     // перекрыли бы одноимённые переменные во всём остальном коде.
     using namespace wxl::dsl;
-
-    // Страница живёт в отдельном узле, а не прямо в корне: поверхность
-    // прицеплена к нему дочерним визуалом, а всё, что кладут поверх полосы
-    // (сноска, панель), — это дети корня, идущие после него. Порядок детей и
-    // есть порядок по глубине.
-    pageHost_ = Grid{};
 
     // Два листа под общим контейнером. Клип контейнера — то, что не даёт
     // повёрнутому листу вылезти за полосу: клип живёт в координатах самого
@@ -352,24 +356,26 @@ Grid BookView::buildTree() {
 
     applyShadowTint();
 
-    ElementCompositionPreview::setElementChildVisual(pageHost_.value(), sheets_.value());
+    // Страница — на сцене окна: её визуалы висят на композиторе окна и привешены
+    // к contentVisual() (над задником, под островом), а не всунуты в дерево XAML
+    // через setElementChildVisual. Пока полоса не стала текущим экраном, её сцена
+    // скрыта — setActive(true) покажет её при входе в чтение.
+    window_->contentVisual().children().insertAtTop(sheets_.value());
+    sheets_.value().isVisible(false);
 
     auto tree = Grid{
         // Корень берёт фокус на себя: событие клавиши начинается у того, на
         // чём фокус, и пока фокуса нет ни на чём, ловить нечего.
         isTabStop = true,
 
-        // Кисть здесь нужна по двум причинам, и обе неочевидны.
-        //
-        // Панель без кисти в проверке попадания не участвует вовсе, и щелчок
-        // по полосе не доходил никуда: ни до знака сноски, ни до трети
-        // страницы. И кисть эта — цвета бумаги, а не прозрачная: страницу
-        // рисует композитор поверх неё, но в те кадры, когда он ещё не
-        // нарисовал (первый показ, растянутое мышью окно), из-под неё должна
-        // проглядывать бумага, а не белизна окна.
-        background = SolidColorBrush{ARGB{argbOf(kThemes[0].background)}},
+        // Кисть прозрачная, но она есть: без кисти Grid не участвует в проверке
+        // попадания вовсе, и щелчок по полосе не доходил бы никуда — ни до знака
+        // сноски, ни до трети страницы. Прозрачная потому, что страница теперь
+        // на сцене под этим островом, и сквозь него должна быть видна она.
+        // Бумагу-основу под страницей несёт задник окна (см. setActive), а сам
+        // набор нарисован на сцене.
+        background = SolidColorBrush{colors.transparent},
 
-        pageHost_.value(),
         note_.root(),
     };
 
@@ -560,11 +566,29 @@ bool BookView::dismissOverlays() {
     return true;
 }
 
+void BookView::setActive(bool active) {
+    active_ = active;
+    if (sheets_) sheets_.value().isVisible(active);
+
+    // Входя в чтение, ставим задником окна бумагу текущей темы — основу под
+    // страницей — и подводим подложку темы. Уходя, задник вернёт себе стартовый
+    // экран (заставку): полоса за него не отвечает, её дело — снять со сцены
+    // свою страницу.
+    if (active && window_) {
+        window_->background(ARGB{argbOf(paper().background)});
+        updateBackdrop();
+    }
+}
+
 void BookView::setTheme(int index) {
     const int count = themeCount();
     theme_ = ((index % count) + count) % count;
     note_.hide();   // подложка всплывашки покрашена прошлой темой
-    root_.value().background(SolidColorBrush{ARGB{argbOf(paper().background)}});
+    // Бумага-основа — задником окна, а не кистью корня: страница теперь на
+    // сцене, и основа под ней, сквозь которую при растяжке видна бумага, а не
+    // заставка, — это задний фон окна. Ставим только когда полоса показана: до
+    // входа в чтение задником владеет заставка стартового экрана.
+    if (active_ && window_) window_->background(ARGB{argbOf(paper().background)});
     applyShadowTint();   // тени тоже покрашены прошлой темой
 
     // Карта держит форму конкретной обложки — новой теме она не годится.
