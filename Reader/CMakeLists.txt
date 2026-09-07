@@ -88,6 +88,24 @@ else()
         "Reader не запустится, пока она не окажется рядом с исполняемым файлом.")
 endif()
 
+# Win2D (Microsoft.Graphics.Canvas) активируется неупакованно из своей нативной
+# DLL — CompositionWindow грузит ею текстуры (TextureCache), и без неё окно
+# падает при создании. Как загрузчик выше: путь объявляет wxl.winui, копируем
+# рядом с исполняемым файлом.
+set(_reader_win2d_dll
+    "${WXL_WIN2D_DIR}/runtimes/win-x64/native/Microsoft.Graphics.Canvas.dll")
+
+if(EXISTS "${_reader_win2d_dll}")
+    add_custom_command(TARGET Reader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_reader_win2d_dll}" "$<TARGET_FILE_DIR:Reader>"
+        COMMENT "Копирование Microsoft.Graphics.Canvas.dll (Win2D) рядом с Reader")
+else()
+    message(WARNING
+        "Нет Microsoft.Graphics.Canvas.dll по пути ${_reader_win2d_dll}; "
+        "Reader упадёт при создании окна, пока она не окажется рядом с ним.")
+endif()
+
 # TODO: витрина хранилища, наблюдаемые каталоги, второй вариант листания.
 # Всё по порядку -- в docs/reader.md. Мастер обложек сделан -- его план
 # остался в doc/skin-wizard-plan.txt.
