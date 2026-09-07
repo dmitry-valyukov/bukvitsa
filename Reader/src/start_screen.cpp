@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <chrono>
 
-#include "card.h"
 
 namespace bukvitsa::reader {
 
@@ -13,7 +12,7 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Ширина колонки кнопок; где ей стоять, знает карточка (card.h).
+// Ширина колонки кнопок; где ей стоять, сказано у самой карточки.
 constexpr float kButtonWidth = 300.0f;
 
 // Проявление: длительность одной кнопки и разбег между соседними. Четыре
@@ -63,7 +62,15 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
     // смещение карточки к попаданию мыши дважды, кнопки рисуются на месте, а
     // ловят щелчки за правым краем экрана (проверено UIA: x кнопок удвоился).
     // Поэтому прозрачностью проявляется обёртка, у которой фасадов нет.
-    auto card = buttonCard(panel);
+    //
+    // Сама карточка — библиотечная wxl::OverlayCard, та, что для страницы с
+    // картинкой под ней. Своего здесь только место.
+    auto card = Built<OverlayCard>{
+        hAlign.right,
+        vAlign.top,
+        Margin{0, 64, 72, 0},
+        panel,
+    };
     auto cardShell = Grid{card};
     Visual cardVisual = ElementCompositionPreview::getElementVisual(cardShell);
     cardVisual.opacity(0.0f);
