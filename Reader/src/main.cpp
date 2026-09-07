@@ -360,6 +360,9 @@ task openBookFlow(App app, std::filesystem::path path) {
 
     *app.bookCameFrom = *app.shown;
     *app.shown = Screen::Book;
+    // Полоса становится текущим экраном: показать её страницу на сцене и увести
+    // задник окна с заставки на бумагу темы. Только потом — остров ввода поверх.
+    app.view->setActive(true);
     app.window->content(app.view->root());
 }
 
@@ -483,7 +486,7 @@ wxl::Teardown wxl_launched() {
     io->start(window->dispatcherQueue());
 
     auto screen = std::make_shared<StartScreen>(window->chromeCompositor());
-    auto view = std::make_shared<BookView>(window->chromeCompositor(), window->dispatcherQueue());
+    auto view = std::make_shared<BookView>(*window);
     auto shelf = std::make_shared<LibraryScreen>();
     auto skins = std::make_shared<Skins>();
     auto wizard = std::make_shared<SkinWizard>(window->chromeCompositor());
@@ -541,13 +544,20 @@ wxl::Teardown wxl_launched() {
 
     auto const closePanel = [panel] { panel->close(); };
 
-    auto const showStartScreen = [window, screen, settings, library, shown, rememberPosition,
+    auto const showStartScreen = [window, screen, view, settings, library, shown, rememberPosition,
                                   closePanel] {
         closePanel();
         // Уходя из книги, место чтения пишем сразу: отложенная запись ждёт
         // паузы, а читатель уже ушёл -- и, может быть, закроет приложение
         // раньше, чем таймер сработает.
         rememberPosition();
+
+        // Полоса перестаёт быть текущим экраном: убрать её страницу со сцены и
+        // вернуть задником окна заставку — под стартовым экраном она, а не
+        // бумага книги. Задел на будущее (кэш texture держит снимок) — второй
+        // показ заставки идёт без загрузки.
+        view->setActive(false);
+        window->backgroundAsync(exeDirectory() / L"Assets/splash-screen-1k.png");
 
         // Большой кнопке — её книга: обложка, название, автор. На каждом
         // показе, потому что последняя открытая книга могла смениться, пока
@@ -570,6 +580,12 @@ wxl::Teardown wxl_launched() {
                               closePanel] {
         closePanel();
         rememberPosition();   // и полка тут же покажет свежий процент
+
+        // Как и на стартовом экране: полоса перестаёт быть текущим экраном —
+        // её страница уходит со сцены, а задником окна снова заставка.
+        app.view->setActive(false);
+        window->backgroundAsync(exeDirectory() / L"Assets/splash-screen-1k.png");
+
         // Полка пересобирается на каждый показ: книга могла добавиться, а
         // место чтения — уехать с тех пор, как её видели в прошлый раз.
         shelf->show(*library, settings->continueReading);
