@@ -270,6 +270,10 @@ private:
     void drawPage(ID2D1DeviceContext* context, float width, float height);
     void drawInvitation(ID2D1DeviceContext* context, float width, float height);
 
+    /// Рисует фотоподложку темы прямо в поверхность страницы, под текстом:
+    /// страница остаётся одним битмапом, без отдельного визуала-подложки.
+    void drawThemeBackdrop(ID2D1DeviceContext* context, float width, float height);
+
     /// Всё содержимое страницы — набор, картинки, средник, колонцифру — в этот
     /// контекст. Вынесено из `drawPage`, потому что рисуется в два адреса: в
     /// поверхность напрямую у ровных тем и в слой изгиба у темы с фотографией.
@@ -473,13 +477,11 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> statusFormat_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> invitationFormat_;
 
-    /// Подложка темы — свой визуал под обоими листами страницы, со своей
-    /// поверхностью в размере снимка, а не окна. Смена размера полосы двигает
-    /// только Visual::size(), как и у обычных листов, — растяжку снимка под
-    /// новый размер тянет кисть композитора, а не эта поверхность, и лишний
-    /// пересчёт при каждом WM_SIZE ей не грозит.
-    wxl::Nullable<wxl::SpriteVisual> backdrop_ = nullptr;
-    std::optional<wxl::DrawingSurface> backdropSurface_;
+    /// Фотоподложка темы, раскодированная в битмап устройства поверхности:
+    /// рисуется прямо в поверхность страницы под текстом (drawThemeBackdrop), а
+    /// не отдельным визуалом, — страница остаётся одним битмапом. Кэшируется,
+    /// пока снимок тот же; сбрасывается при смене темы, заводится в drawPage.
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> photoBitmap_;
 
     /// Подложка темы на пути от файла к экрану. Раскодированный снимок висит
     /// здесь, пока путь не сменится, — decodeImage() читает диск и стоит
