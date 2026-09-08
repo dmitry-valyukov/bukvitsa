@@ -504,6 +504,14 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     std::printf("  пагинация: %zu страниц, %.0f мс; смена кегля: %.0f мс\n",
                 paginator.pageCount(), firstElapsed, againElapsed);
 
+    // Среднее на абзац: вся книга накоплена и свёрстана разом (setStyle),
+    // делим на число блоков. Первый прогон — полная пагинация, с шейпингом;
+    // второй (смена кегля) — только разбивка на строки. Счётчик рядом с
+    // числом, чтобы видеть, что мерилось не пустое место.
+    std::printf("  абзацев: %zu; на абзац: %.1f мкс полная, %.1f мкс перевёрстка\n",
+                blocks.size(), firstElapsed * 1000.0 / static_cast<double>(blocks.size()),
+                againElapsed * 1000.0 / static_cast<double>(blocks.size()));
+
     check(paginator.pageCount() > 0, "книга разложена по страницам");
 
     // Страницы идут по порядку и не теряют текст между собой: разрыв здесь
