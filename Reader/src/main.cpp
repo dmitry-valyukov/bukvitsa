@@ -345,17 +345,17 @@ task openBookFlow(App app, std::filesystem::path path) {
     app.view->open(std::move(book), app.state->charOffset);
     app.panel->setState(app.state.get());
 
-    // Сверстать и нарисовать до показа. Полоса займёт то же место, что и экран,
-    // который сейчас на нём стоит, — а у него и спрашиваем размер с масштабом.
-    // Иначе читатель, нажав «Продолжить чтение», успевает увидеть пустой лист:
-    // элемент попадает в дерево сразу, а рисовать его есть чем только со
-    // следующего кадра.
-    if (Nullable<UIElement> const showing = app.window->content()) {
-        if (Nullable<XamlRoot> const root = showing->xamlRoot()) {
-            Size const area = root->size();
-            app.view->prepare(area.width, area.height,
-                              static_cast<float>(root->rasterizationScale()));
-        }
+    // Сверстать и нарисовать до показа, чтобы читатель не увидел пустой лист.
+    // Страница живёт задником окна, и меру — размер с масштабом — берём у самого
+    // окна, а не у экрана поверх него. Так это работает и при автооткрытии на
+    // старте, когда никакого экрана ещё нет: прежде размер спрашивали у
+    // content()->xamlRoot(), а на старте острова нет вовсе — и падало на нуле.
+    if (SizeInt32 const pixels = app.window->clientSize();
+        pixels.width > 0 && pixels.height > 0) {
+        float scale = app.window->rasterizationScale();
+        if (scale <= 0.0f) scale = 1.0f;
+        app.view->prepare(static_cast<float>(pixels.width) / scale,
+                          static_cast<float>(pixels.height) / scale, scale);
     }
 
     *app.bookCameFrom = *app.shown;
