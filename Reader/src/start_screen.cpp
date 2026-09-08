@@ -65,7 +65,7 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
     //
     // Сама карточка — библиотечная wxl::OverlayCard, та, что для страницы с
     // картинкой под ней. Своего здесь только место.
-    auto card = Built<OverlayCard>{
+    auto card = OverlayCard{
         hAlign.right,
         vAlign.top,
         Margin{0, 64, 72, 0},
