@@ -110,7 +110,7 @@ void SkinWizard::buildTree() {
     // экрана: «Сохранить» увеличена, как «Продолжить чтение», — это действие
     // по умолчанию, его же зовёт Enter; «Выйти из мастера обложек» — отмена,
     // её зовёт Escape.
-    auto buttons = Built<OverlayCard>{
+    auto buttons = OverlayCard{
         hAlign.right,
         vAlign.top,
         Margin{0, 64, 72, 0},
