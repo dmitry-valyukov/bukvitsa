@@ -489,7 +489,7 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     style.fontSize = 20.0f;
 
     const auto started = std::chrono::steady_clock::now();
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
     const auto firstElapsed = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - started).count();
@@ -590,7 +590,7 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
 
     // Снимок целой вёрстки. Именно снимок, а не ссылки: следующая вёрстка
@@ -703,7 +703,7 @@ void testDraftPagination(typography::Engine& engine, const std::vector<typograph
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
     if (paginator.pageCount() < 8) {
         check(true, "книга слишком коротка для грязной вёрстки — пропущено");
@@ -771,7 +771,7 @@ void testDraftPagination(typography::Engine& engine, const std::vector<typograph
     // Энергичный досчёт: чистовой набор доводится ровно до нужного места и не
     // дальше. На этом стоит листание назад и прыжок по закладке — читателю
     // там ждать порций нечего, но и считать книгу целиком незачем.
-    typography::Paginator second(engine, blocks, characterCount);
+    typography::Chapter second(engine, blocks, characterCount);
     second.beginLayout(style);
     const bool more = second.advanceTo(at);
     const std::size_t reached = second.pageForCharOffset(at);
@@ -813,7 +813,7 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
     // строка на неё вместе уже не помещаются.
     style.height = 30.0f;
 
-    typography::Paginator paginator(
+    typography::Chapter paginator(
         engine, blocks, static_cast<std::uint32_t>(paragraph.paragraph.text.size()));
     paginator.setStyle(style);
 

@@ -74,8 +74,8 @@ public:
     /// шрифтами и тем же кэшем, что и страницу.
     typography::Engine& engine() { return engine_; }
 
-    typography::Paginator& paginator() { return *paginator_; }
-    const typography::Paginator& paginator() const { return *paginator_; }
+    typography::Chapter& paginator() { return *paginator_; }
+    const typography::Chapter& paginator() const { return *paginator_; }
 
     /// Книга, развёрнутая в блоки, — мастер-список для оглавления и поиска.
     /// Пагинатор смотрит в него же, но по одной главе за раз.
@@ -126,7 +126,7 @@ private:
     /// поиск, и в него же (видом, не копией) смотрит пагинатор — по одной главе
     /// за раз. Заводится до пагинатора и живёт дольше: тот держит вид в него.
     std::vector<typography::Block> blocks_;
-    std::unique_ptr<typography::Paginator> paginator_;
+    std::unique_ptr<typography::Chapter> paginator_;
 
     /// Индексы блоков — начала глав верхнего уровня; [0] всегда 0. Пагинатор
     /// верстает по одной главе, а это её границы в мастер-списке.

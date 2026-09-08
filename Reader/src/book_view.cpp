@@ -955,7 +955,7 @@ std::size_t BookView::catchUpTo(std::uint32_t charOffset) {
     // Место может лежать в другой главе — наводим пагинатор на неё.
     book_->setCurrentChapter(charOffset);
 
-    typography::Paginator& paginator = book_->paginator();
+    typography::Chapter& paginator = book_->paginator();
 
     // Набор главы мог быть ещё не начат — сменилась глава, или перевёрстка ещё
     // не дошла до фоновой порции. Тогда advanceTo читал бы пустой laidOut;
@@ -982,7 +982,7 @@ std::optional<std::size_t> BookView::cleanSpread() const {
     if (!book_) return std::nullopt;
     if (!draft_) return page_;
 
-    const typography::Paginator& paginator = book_->paginator();
+    const typography::Chapter& paginator = book_->paginator();
     if (paginator.pageCount() == 0) return std::nullopt;
 
     // Номер известен, только когда набор ушёл за эту страницу: пока она
@@ -1009,7 +1009,7 @@ void BookView::turnDraftForward() {
 
 void BookView::startDraftTurn() {
     const auto columns = static_cast<std::size_t>(columns_);
-    typography::Paginator& paginator = book_->paginator();
+    typography::Chapter& paginator = book_->paginator();
 
     // Следующая страница нужна ровно здесь: её первый символ — то место, с
     // которого начинается новый разворот. Считать её заранее, на каждое
@@ -1045,7 +1045,7 @@ void BookView::startDraftTurn() {
 const typography::Page* BookView::spreadPage(std::size_t column) const {
     if (!book_) return nullptr;
 
-    const typography::Paginator& paginator = book_->paginator();
+    const typography::Chapter& paginator = book_->paginator();
     if (draft_) {
         if (column >= paginator.draftCount()) return nullptr;
         return &paginator.draftPage(column);
@@ -1686,7 +1686,7 @@ void BookView::goToChapterSpread(std::size_t chapter, bool atEnd) {
     resetSheets();
 
     book_->setCurrentChapter(book_->chapterFirstChar(chapter));
-    typography::Paginator& paginator = book_->paginator();
+    typography::Chapter& paginator = book_->paginator();
     paginator.beginLayout(pageStyle_);
     paginator.advanceToPage(static_cast<std::size_t>(-1));   // до конца главы
 

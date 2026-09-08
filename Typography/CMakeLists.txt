@@ -4,7 +4,7 @@ add_library(bukvitsa_typography STATIC
     src/engine.cpp
     src/formula.cpp
     src/glyph_painter.cpp
-    src/paginator.cpp
+    src/chapter.cpp
     src/typography.cpp
 )
 add_library(bukvitsa::typography ALIAS bukvitsa_typography)

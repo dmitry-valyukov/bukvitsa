@@ -64,7 +64,7 @@ struct Page {
 ///
 /// Перевёрстка — это `setStyle`: всё, что зависит от кегля и полосы,
 /// пересчитывается, а позиции чтения остаются те же, потому что они в символах.
-class Paginator {
+class Chapter {
 public:
     /// @param blocks блоки книги — вид, не копия: пагинатор их не меняет и не
     ///        владеет ими, поэтому список обязан его пережить. Держит его Book,
@@ -74,12 +74,12 @@ public:
     ///        выбрасывает пробелы между ними.
     /// @param imageSize размеры картинки по её индексу в книге; вёрстка
     ///        картинок не декодирует, поэтому спрашивает у приложения.
-    Paginator(Engine& engine, std::span<const Block> blocks, std::uint32_t characterCount,
+    Chapter(Engine& engine, std::span<const Block> blocks, std::uint32_t characterCount,
               std::function<ImageSize(std::uint32_t)> imageSize = {});
-    ~Paginator();
+    ~Chapter();
 
-    Paginator(const Paginator&) = delete;
-    Paginator& operator=(const Paginator&) = delete;
+    Chapter(const Chapter&) = delete;
+    Chapter& operator=(const Chapter&) = delete;
 
     /// Перевёрстывает книгу целиком и сразу. Дорого — доли секунды на роман, —
     /// и потому годится там, где ждать некому: в тестах и в пакетной работе.

@@ -357,7 +357,7 @@ std::size_t nonEmptyLimit(const pool_vector<LaidOutBlock>& blocks) {
 
 /* ================================================================== */
 
-struct Paginator::Impl {
+struct Chapter::Impl {
     Engine& engine;
     std::span<const Block> blocks;   ///< книги: вид в мастер-список Book, не копия
     std::function<ImageSize(std::uint32_t)> imageSize;
@@ -625,26 +625,26 @@ struct Paginator::Impl {
 
 /* ================================================================== */
 
-Paginator::Paginator(Engine& engine, std::span<const Block> blocks, std::uint32_t characterCount,
+Chapter::Chapter(Engine& engine, std::span<const Block> blocks, std::uint32_t characterCount,
                      std::function<ImageSize(std::uint32_t)> imageSize)
     : impl_(std::make_unique<Impl>(engine, blocks, characterCount, std::move(imageSize))) {}
 
-Paginator::~Paginator() = default;
+Chapter::~Chapter() = default;
 
-void Paginator::setStyle(const PageStyle& style) {
+void Chapter::setStyle(const PageStyle& style) {
     impl_->beginLayout(style);
     impl_->run(std::nullopt);
 }
 
-void Paginator::setChapter(std::span<const Block> blocks) { impl_->setChapter(blocks); }
+void Chapter::setChapter(std::span<const Block> blocks) { impl_->setChapter(blocks); }
 
-void Paginator::beginLayout(const PageStyle& style) { impl_->beginLayout(style); }
+void Chapter::beginLayout(const PageStyle& style) { impl_->beginLayout(style); }
 
-bool Paginator::advance(std::chrono::steady_clock::duration budget) {
+bool Chapter::advance(std::chrono::steady_clock::duration budget) {
     return impl_->run(std::chrono::steady_clock::now() + budget);
 }
 
-bool Paginator::advanceTo(std::uint32_t charOffset) {
+bool Chapter::advanceTo(std::uint32_t charOffset) {
     const pool_vector<Page>& pages = impl_->book.pages;
 
     // Страница с этим символом окончательна, только когда набор ушёл за неё:
@@ -653,16 +653,16 @@ bool Paginator::advanceTo(std::uint32_t charOffset) {
         [&] { return !pages.empty() && pages.back().firstCharOffset > charOffset; });
 }
 
-bool Paginator::advanceToPage(std::size_t index) {
+bool Chapter::advanceToPage(std::size_t index) {
     const pool_vector<Page>& pages = impl_->book.pages;
     return impl_->runUntil([&] { return pages.size() > index; });
 }
 
-bool Paginator::isComplete() const { return impl_->complete; }
+bool Chapter::isComplete() const { return impl_->complete; }
 
-const PageStyle& Paginator::style() const { return impl_->style; }
+const PageStyle& Chapter::style() const { return impl_->style; }
 
-std::size_t Paginator::pageCount() const { return impl_->book.pages.size(); }
+std::size_t Chapter::pageCount() const { return impl_->book.pages.size(); }
 
 namespace {
 
@@ -676,29 +676,29 @@ const Page& nowhere() {
 
 }  // namespace
 
-const Page& Paginator::page(std::size_t index) const {
+const Page& Chapter::page(std::size_t index) const {
     const pool_vector<Page>& pages = impl_->book.pages;
     if (pages.empty())
         return nowhere();
     return pages[std::min(index, pages.size() - 1)];
 }
 
-std::size_t Paginator::draftCount() const { return impl_->draft.pages.size(); }
+std::size_t Chapter::draftCount() const { return impl_->draft.pages.size(); }
 
-const Page& Paginator::draftPage(std::size_t index) const {
+const Page& Chapter::draftPage(std::size_t index) const {
     const pool_vector<Page>& pages = impl_->draft.pages;
     if (pages.empty())
         return nowhere();
     return pages[std::min(index, pages.size() - 1)];
 }
 
-void Paginator::draftAt(const PageStyle& style, std::uint32_t charOffset, std::size_t count) {
+void Chapter::draftAt(const PageStyle& style, std::uint32_t charOffset, std::size_t count) {
     impl_->draftAt(style, charOffset, count);
 }
 
-bool Paginator::draftUpTo(std::size_t count) { return impl_->draftUpTo(count); }
+bool Chapter::draftUpTo(std::size_t count) { return impl_->draftUpTo(count); }
 
-std::size_t Paginator::pageForCharOffset(std::uint32_t charOffset) const {
+std::size_t Chapter::pageForCharOffset(std::uint32_t charOffset) const {
     const pool_vector<Page>& pages = impl_->book.pages;
 
     // Страницы упорядочены по позиции в книге, поэтому — двоичный поиск
@@ -713,8 +713,8 @@ std::size_t Paginator::pageForCharOffset(std::uint32_t charOffset) const {
     return static_cast<std::size_t>(std::distance(pages.begin(), found) - 1);
 }
 
-std::uint32_t Paginator::characterCount() const { return impl_->characterCount; }
+std::uint32_t Chapter::characterCount() const { return impl_->characterCount; }
 
-std::span<const Block> Paginator::blocks() const { return impl_->blocks; }
+std::span<const Block> Chapter::blocks() const { return impl_->blocks; }
 
 }  // namespace bukvitsa::typography
