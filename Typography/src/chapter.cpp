@@ -10,17 +10,9 @@
 // окна читатель видит как заедание: он тянет край окна или крутит колесо с
 // Ctrl, и каждое движение стоило бы ему целой книги. Поэтому состояние набора
 // вынесено из функции в `PageBuilder`: между порциями ему надо где-то лежать.
-//
-// Отдельно от порций стоит грязная вёрстка (`draftAt`) — те несколько страниц,
-// которые читатель видит прямо сейчас, свёрстанные ровно с его места и ни от
-// чего больше не зависящие. Она считается за единицы миллисекунд и потому
-// показывается сразу, а книга набирается следом, порциями, в свободное время
-// потока — и подменять собой показанное не спешит.
-//
-// Грязная вёрстка продолжаема: `draftUpTo` досчитывает её до нужного числа
-// страниц, начиная с того блока, на котором она остановилась. Так листание
-// вперёд получает следующую страницу тогда, когда она понадобилась, а не
-// заранее — считать её на каждое движение мыши значило бы считать зря.
+// Порции хороши, пока читатель просто читает; когда он идёт туда, куда счёт
+// ещё не дошёл, `advanceTo`/`advanceToPage` энергично досчитывают набор до
+// нужного места без срока, а остаток по-прежнему добирается порциями.
 //
 // Стиль блока — таблица здесь, а не в приложении: как выглядит эпиграф, знает
 // вёрстка, а не окно. Читалка задаёт кегль и полосу, всё остальное отсюда.
@@ -382,18 +374,6 @@ struct Chapter::Impl {
     std::size_t lastNonEmpty = 0;    ///< за него набору заходить нельзя
     bool complete = true;
 
-    /* ---------------- грязная вёрстка ---------------- */
-
-    /// Своё хранилище, а не общее с книгой: грязная страница живёт ровно
-    /// тогда, когда книга ещё считается, — то есть когда `laidOut` под ней
-    /// перевёрстывается. Общее хранилище означало бы, что читатель смотрит на
-    /// строки, которые в этот момент переписывают.
-    pool_vector<LaidOutBlock> draftBlocks;
-    PageBuilder draft;
-    std::size_t draftCursor = 0;        ///< следующий блок книги для грязной вёрстки
-    std::uint32_t draftFirstChar = 0;   ///< с какого символа начинать этот блок
-    bool draftDone = true;              ///< книга кончилась, страниц больше не будет
-
     Impl(Engine& engine_, std::span<const Block> blocks_, std::uint32_t characterCount_,
          std::function<ImageSize(std::uint32_t)> imageSize_)
         : engine(engine_), blocks(blocks_), imageSize(std::move(imageSize_)),
@@ -408,11 +388,6 @@ struct Chapter::Impl {
         layoutCursor = 0;
         lastNonEmpty = 0;
         complete = blocks.empty();
-        draftBlocks.clear();
-        draft.pages.clear();
-        draftCursor = 0;
-        draftFirstChar = 0;
-        draftDone = true;
     }
 
     /* ---------------- вёрстка блока ---------------- */
@@ -560,65 +535,6 @@ struct Chapter::Impl {
             book.pages.push_back(Page{});
     }
 
-    /* ---------------- мгновенная страница ---------------- */
-
-    /// Блок, внутри которого лежит этот символ книги.
-    std::size_t blockAt(std::uint32_t charOffset) const {
-        const auto found = std::upper_bound(blocks.begin(), blocks.end(), charOffset,
-                                            [](std::uint32_t offset, const Block& block) {
-                                                return offset < block.charOffset;
-                                            });
-        if (found == blocks.begin())
-            return 0;
-        return static_cast<std::size_t>(std::distance(blocks.begin(), found) - 1);
-    }
-
-    /// Тот же символ, но в координатах текста абзаца.
-    std::uint32_t charInBlock(std::size_t index, std::uint32_t charOffset) const {
-        const std::vector<std::uint32_t>& offsets = blocks[index].paragraph.charOffsets;
-        const auto found = std::lower_bound(offsets.begin(), offsets.end(), charOffset);
-        if (found == offsets.end())
-            return 0;   // место чтения дальше текста блока — начинаем с начала
-        return static_cast<std::uint32_t>(std::distance(offsets.begin(), found));
-    }
-
-    void draftAt(const PageStyle& pageStyle, std::uint32_t charOffset, std::size_t count) {
-        style = pageStyle;
-        shaped.resize(blocks.size());
-
-        draftBlocks.clear();
-        draft.reset(draftBlocks, style);
-
-        draftDone = blocks.empty();
-        draftCursor = draftDone ? 0 : blockAt(charOffset);
-        draftFirstChar = draftDone ? 0 : charInBlock(draftCursor, charOffset);
-
-        draftUpTo(count);
-    }
-
-    /// Досчитывает грязную вёрстку до `count` страниц, продолжая с того блока,
-    /// на котором остановилась.
-    /// @return false, если книга кончилась раньше.
-    bool draftUpTo(std::size_t count) {
-        while (!draftDone && draft.pages.size() < count) {
-            if (draftCursor >= blocks.size()) {
-                // Книга кончилась — закрываем последнюю страницу.
-                draft.finish();
-                draftDone = true;
-                break;
-            }
-
-            draftBlocks.push_back(layOut(draftCursor, draftFirstChar));
-            draftFirstChar = 0;
-            ++draftCursor;
-
-            // Тот же уговор, что и у книги: набор не заходит за последний
-            // непустой блок, потому что заглядывает вперёд.
-            draft.place(nonEmptyLimit(draftBlocks));
-        }
-
-        return draft.pages.size() >= count;
-    }
 };
 
 /* ================================================================== */
@@ -680,21 +596,6 @@ const Page& Chapter::page(std::size_t index) const {
         return nowhere();
     return pages[std::min(index, pages.size() - 1)];
 }
-
-std::size_t Chapter::draftCount() const { return impl_->draft.pages.size(); }
-
-const Page& Chapter::draftPage(std::size_t index) const {
-    const pool_vector<Page>& pages = impl_->draft.pages;
-    if (pages.empty())
-        return nowhere();
-    return pages[std::min(index, pages.size() - 1)];
-}
-
-void Chapter::draftAt(const PageStyle& style, std::uint32_t charOffset, std::size_t count) {
-    impl_->draftAt(style, charOffset, count);
-}
-
-bool Chapter::draftUpTo(std::size_t count) { return impl_->draftUpTo(count); }
 
 std::size_t Chapter::pageForCharOffset(std::uint32_t charOffset) const {
     const pool_vector<Page>& pages = impl_->book.pages;
