@@ -54,8 +54,8 @@ struct PlacedImage {
 };
 
 struct Page {
-    std::vector<PlacedLine> lines;
-    std::vector<PlacedImage> images;
+    pool_vector<PlacedLine> lines;
+    pool_vector<PlacedImage> images;
     std::uint32_t firstCharOffset = 0;
     std::uint32_t lastCharOffset = 0;
 };

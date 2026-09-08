@@ -365,7 +365,7 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
             continue;
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
-        const std::vector<typography::Line> lines = engine.layout(block.paragraph, width, style);
+        const auto lines = engine.layout(block.paragraph, width, style);
 
         std::uint32_t reached = 0;
         for (const typography::Line& line : lines) {
@@ -463,7 +463,7 @@ void showFirstLines(typography::Engine& engine, const std::vector<typography::Bl
             continue;
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
-        const std::vector<typography::Line> lines = engine.layout(block.paragraph, width, style);
+        const auto lines = engine.layout(block.paragraph, width, style);
 
         std::printf("  абзац на полосе %.0f (отступ %.0f):\n", width, style.firstLineIndent);
         for (std::size_t i = 0; i < lines.size() && i < 8; ++i) {
@@ -833,8 +833,8 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
         const typography::ParagraphStyle atTwentySix = styleFor(block, 26.0f);
 
         const typography::ShapedParagraphPtr shaped = engine.shape(block.paragraph, atTwenty);
-        const std::vector<typography::Line> scaled = engine.layout(*shaped, width, atTwentySix);
-        const std::vector<typography::Line> fresh = engine.layout(block.paragraph, width, atTwentySix);
+        const auto scaled = engine.layout(*shaped, width, atTwentySix);
+        const auto fresh = engine.layout(block.paragraph, width, atTwentySix);
 
         ++compared;
         if (scaled.size() != fresh.size())

@@ -53,9 +53,9 @@ struct GlyphRun {
     std::uint8_t bidiLevel = 0;
     FontStyle style;                       ///< подчёркивание и зачёркивание рисует читалка
 
-    std::vector<std::uint16_t> glyphIndices;
-    std::vector<float> advances;
-    std::vector<DWRITE_GLYPH_OFFSET> offsets;
+    pool_vector<std::uint16_t> glyphIndices;
+    pool_vector<float> advances;
+    pool_vector<DWRITE_GLYPH_OFFSET> offsets;
 
     /// Кусок Paragraph::text, из которого набран прогон. Нужен всем, кто
     /// связывает нарисованное с исходным текстом: знаку сноски, подсветке
@@ -77,8 +77,8 @@ struct PlacedNote {
 
 /// Одна набранная строка.
 struct Line {
-    std::vector<GlyphRun> runs;
-    std::vector<PlacedNote> notes;
+    pool_vector<GlyphRun> runs;
+    pool_vector<PlacedNote> notes;
 
     float ascent = 0.0f;                   ///< от базовой линии вверх
     float descent = 0.0f;
@@ -152,7 +152,7 @@ public:
     /// Если стиль разошёлся с тем, на котором абзац шейпили, не размером
     /// (сменилось начертание или шрифт книги), абзац шейпится заново на месте —
     /// результат верен всегда, сэкономлено только когда звали правильно.
-    std::vector<Line> layout(const ShapedParagraph& shaped, float width,
+    pool_vector<Line> layout(const ShapedParagraph& shaped, float width,
                              const ParagraphStyle& style);
 
     /// То же, но с середины абзаца: первая строка начинается ровно с символа
@@ -165,13 +165,13 @@ public:
     /// текущей страницы: полоса сменилась, а первая буква на ней осталась той
     /// же, и читатель видит новый кегль не дожидаясь, пока пересчитается вся
     /// книга.
-    std::vector<Line> layoutFrom(const ShapedParagraph& shaped, std::uint32_t firstChar,
+    pool_vector<Line> layoutFrom(const ShapedParagraph& shaped, std::uint32_t firstChar,
                                  float width, const ParagraphStyle& style);
 
     /// Верстает абзац в строки шириной width — шейпинг и разбивка разом.
     ///
     /// Пустой абзац даёт пустой список: блок без текста не занимает полосы.
-    std::vector<Line> layout(const Paragraph& paragraph, float width, const ParagraphStyle& style);
+    pool_vector<Line> layout(const Paragraph& paragraph, float width, const ParagraphStyle& style);
 
     /// Высота строки при таком кегле — нужна пагинатору до вёрстки, чтобы
     /// прикинуть, влезет ли блок.
@@ -180,7 +180,7 @@ public:
 private:
     /// Общее тело обоих `layout`: разбивка от символа `firstChar` до конца
     /// абзаца.
-    std::vector<Line> layoutRange(const ShapedParagraph& shaped, std::uint32_t firstChar,
+    pool_vector<Line> layoutRange(const ShapedParagraph& shaped, std::uint32_t firstChar,
                                   float width, const ParagraphStyle& style);
 
     struct Impl;

@@ -1011,23 +1011,23 @@ ShapedParagraphPtr Engine::shape(const Paragraph& paragraph, const ParagraphStyl
     return result;
 }
 
-std::vector<Line> Engine::layout(const Paragraph& paragraph, float width,
+pool_vector<Line> Engine::layout(const Paragraph& paragraph, float width,
                                  const ParagraphStyle& style) {
     const ShapedParagraphPtr shaped = shape(paragraph, style);
     return layout(*shaped, width, style);
 }
 
-std::vector<Line> Engine::layout(const ShapedParagraph& given, float width,
+pool_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
                                  const ParagraphStyle& style) {
     return layoutRange(given, 0, width, style);
 }
 
-std::vector<Line> Engine::layoutFrom(const ShapedParagraph& given, std::uint32_t firstChar,
+pool_vector<Line> Engine::layoutFrom(const ShapedParagraph& given, std::uint32_t firstChar,
                                      float width, const ParagraphStyle& style) {
     return layoutRange(given, firstChar, width, style);
 }
 
-std::vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_t firstChar,
+pool_vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_t firstChar,
                                       float width, const ParagraphStyle& style) {
     Impl& impl = *impl_;
 
@@ -1083,7 +1083,7 @@ std::vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_
         return {};
 
     /* 6. Строки. */
-    std::vector<Line> lines;
+    pool_vector<Line> lines;
     lines.reserve(breaks.size());
 
     std::uint32_t from = firstChar;

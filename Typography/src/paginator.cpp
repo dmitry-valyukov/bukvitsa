@@ -38,7 +38,7 @@ namespace {
 /// Блок, разложенный на строки, вместе с отбивками.
 struct LaidOutBlock {
     const Block* source = nullptr;
-    std::vector<Line> lines;
+    pool_vector<Line> lines;
     float indent = 0.0f;        ///< втяжка блока слева
     float spaceBefore = 0.0f;
     float spaceAfter = 0.0f;
@@ -180,17 +180,17 @@ Spacing spacingFor(const Block& block) {
 /// адресов уже поставленных строк; оба места, откуда набор зовут, это
 /// обеспечивают.
 struct PageBuilder {
-    const std::vector<LaidOutBlock>* source = nullptr;
+    const pool_vector<LaidOutBlock>* source = nullptr;
     PageStyle style;
 
-    std::vector<Page> pages;
+    pool_vector<Page> pages;
     Page current;
     float used = 0.0f;              ///< сколько полосы занято сверху
     std::uint32_t lastOffset = 0;   ///< позиция последнего поставленного
     std::size_t block = 0;          ///< блок, который ставится следующим
     std::size_t line = 0;           ///< строка внутри него
 
-    void reset(const std::vector<LaidOutBlock>& blocks, const PageStyle& pageStyle) {
+    void reset(const pool_vector<LaidOutBlock>& blocks, const PageStyle& pageStyle) {
         source = &blocks;
         style = pageStyle;
         pages.clear();
@@ -260,7 +260,7 @@ struct PageBuilder {
     /// то, что за ним, — и заглянуть в несвёрстанное значило бы принять
     /// решение по пустому месту.
     void place(std::size_t limit) {
-        const std::vector<LaidOutBlock>& blocks = *source;
+        const pool_vector<LaidOutBlock>& blocks = *source;
 
         while (block < limit) {
             const LaidOutBlock& item = blocks[block];
@@ -345,7 +345,7 @@ struct PageBuilder {
 /// За какой блок набору заходить нельзя: индекс последнего непустого в списке.
 /// Ноль означает «пока некуда» — и это верно и для пустого списка, и для
 /// списка из одних разделителей.
-std::size_t nonEmptyLimit(const std::vector<LaidOutBlock>& blocks) {
+std::size_t nonEmptyLimit(const pool_vector<LaidOutBlock>& blocks) {
     for (std::size_t i = blocks.size(); i > 0; --i) {
         if (blocks[i - 1].occupies())
             return i - 1;
@@ -369,14 +369,14 @@ struct Paginator::Impl {
     /// столько же, сколько книга: от кегля и полосы он не зависит, а стоит
     /// почти всей вёрстки — 253 мс из 267 на романе в 650 тысяч знаков.
     /// Ради этого и разделены shape и layout.
-    std::vector<ShapedParagraphPtr> shaped;
+    pool_vector<ShapedParagraphPtr> shaped;
 
     /* ---------------- порционная вёрстка книги ---------------- */
 
     /// Свёрстанные блоки книги, по индексу в blocks. Заводится сразу на всю
     /// книгу и не растёт: страницы держат указатели на строки, и всякое
     /// перевыделение сделало бы их недействительными.
-    std::vector<LaidOutBlock> laidOut;
+    pool_vector<LaidOutBlock> laidOut;
     PageBuilder book;
     std::size_t layoutCursor = 0;    ///< блок, который верстается следующим
     std::size_t lastNonEmpty = 0;    ///< за него набору заходить нельзя
@@ -388,7 +388,7 @@ struct Paginator::Impl {
     /// тогда, когда книга ещё считается, — то есть когда `laidOut` под ней
     /// перевёрстывается. Общее хранилище означало бы, что читатель смотрит на
     /// строки, которые в этот момент переписывают.
-    std::vector<LaidOutBlock> draftBlocks;
+    pool_vector<LaidOutBlock> draftBlocks;
     PageBuilder draft;
     std::size_t draftCursor = 0;        ///< следующий блок книги для грязной вёрстки
     std::uint32_t draftFirstChar = 0;   ///< с какого символа начинать этот блок
@@ -645,7 +645,7 @@ bool Paginator::advance(std::chrono::steady_clock::duration budget) {
 }
 
 bool Paginator::advanceTo(std::uint32_t charOffset) {
-    const std::vector<Page>& pages = impl_->book.pages;
+    const pool_vector<Page>& pages = impl_->book.pages;
 
     // Страница с этим символом окончательна, только когда набор ушёл за неё:
     // пока она последняя, на ней ещё будет место.
@@ -654,7 +654,7 @@ bool Paginator::advanceTo(std::uint32_t charOffset) {
 }
 
 bool Paginator::advanceToPage(std::size_t index) {
-    const std::vector<Page>& pages = impl_->book.pages;
+    const pool_vector<Page>& pages = impl_->book.pages;
     return impl_->runUntil([&] { return pages.size() > index; });
 }
 
@@ -677,7 +677,7 @@ const Page& nowhere() {
 }  // namespace
 
 const Page& Paginator::page(std::size_t index) const {
-    const std::vector<Page>& pages = impl_->book.pages;
+    const pool_vector<Page>& pages = impl_->book.pages;
     if (pages.empty())
         return nowhere();
     return pages[std::min(index, pages.size() - 1)];
@@ -686,7 +686,7 @@ const Page& Paginator::page(std::size_t index) const {
 std::size_t Paginator::draftCount() const { return impl_->draft.pages.size(); }
 
 const Page& Paginator::draftPage(std::size_t index) const {
-    const std::vector<Page>& pages = impl_->draft.pages;
+    const pool_vector<Page>& pages = impl_->draft.pages;
     if (pages.empty())
         return nowhere();
     return pages[std::min(index, pages.size() - 1)];
@@ -699,7 +699,7 @@ void Paginator::draftAt(const PageStyle& style, std::uint32_t charOffset, std::s
 bool Paginator::draftUpTo(std::size_t count) { return impl_->draftUpTo(count); }
 
 std::size_t Paginator::pageForCharOffset(std::uint32_t charOffset) const {
-    const std::vector<Page>& pages = impl_->book.pages;
+    const pool_vector<Page>& pages = impl_->book.pages;
 
     // Страницы упорядочены по позиции в книге, поэтому — двоичный поиск
     // последней, начинающейся не позже искомого символа.
