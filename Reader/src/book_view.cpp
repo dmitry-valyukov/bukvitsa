@@ -570,13 +570,12 @@ void BookView::setActive(bool active) {
     active_ = active;
     if (sheets_) sheets_.value().isVisible(active);
 
-    // Входя в чтение, ставим задником окна бумагу текущей темы — основу под
-    // страницей — и подводим подложку темы. Уходя, задник вернёт себе стартовый
-    // экран (заставку): полоса за него не отвечает, её дело — снять со сцены
-    // свою страницу.
+    // Задник окна в чтении — сама страница, один битмап на весь задник: её
+    // ставит redraw поверхностью surface_[resting_], и никакой бумаги-подложки
+    // под ней нет. Уходя, задник вернёт себе стартовый экран (заставку).
     if (active && window_) {
-        window_->background(ARGB{argbOf(paper().background)});
         updateBackdrop();
+        redraw();
     }
 }
 
@@ -1068,6 +1067,11 @@ void BookView::redraw() {
             drawInvitation(context, width_, height_);
         }
     });
+
+    // Страница — задник окна: один битмап на весь задник, кроет его синхронно,
+    // как заставка. В чтении (active_) ставим поверхность задником; на стартовом
+    // экране задником владеет заставка.
+    if (active_ && window_) window_->background(surface_[resting_]);
 }
 
 void BookView::turnPage(int delta) {
