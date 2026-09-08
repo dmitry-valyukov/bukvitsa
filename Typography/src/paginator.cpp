@@ -359,7 +359,7 @@ std::size_t nonEmptyLimit(const std::vector<LaidOutBlock>& blocks) {
 
 struct Paginator::Impl {
     Engine& engine;
-    std::vector<Block> blocks;
+    std::span<const Block> blocks;   ///< книги: вид в мастер-список Book, не копия
     std::function<ImageSize(std::uint32_t)> imageSize;
 
     PageStyle style;
@@ -394,9 +394,9 @@ struct Paginator::Impl {
     std::uint32_t draftFirstChar = 0;   ///< с какого символа начинать этот блок
     bool draftDone = true;              ///< книга кончилась, страниц больше не будет
 
-    Impl(Engine& engine_, std::vector<Block> blocks_, std::uint32_t characterCount_,
+    Impl(Engine& engine_, std::span<const Block> blocks_, std::uint32_t characterCount_,
          std::function<ImageSize(std::uint32_t)> imageSize_)
-        : engine(engine_), blocks(std::move(blocks_)), imageSize(std::move(imageSize_)),
+        : engine(engine_), blocks(blocks_), imageSize(std::move(imageSize_)),
           characterCount(characterCount_) {}
 
     /* ---------------- вёрстка блока ---------------- */
@@ -607,9 +607,9 @@ struct Paginator::Impl {
 
 /* ================================================================== */
 
-Paginator::Paginator(Engine& engine, std::vector<Block> blocks, std::uint32_t characterCount,
+Paginator::Paginator(Engine& engine, std::span<const Block> blocks, std::uint32_t characterCount,
                      std::function<ImageSize(std::uint32_t)> imageSize)
-    : impl_(std::make_unique<Impl>(engine, std::move(blocks), characterCount, std::move(imageSize))) {}
+    : impl_(std::make_unique<Impl>(engine, blocks, characterCount, std::move(imageSize))) {}
 
 Paginator::~Paginator() = default;
 

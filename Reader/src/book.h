@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include <d2d1_1.h>
@@ -76,6 +77,10 @@ public:
     typography::Paginator& paginator() { return *paginator_; }
     const typography::Paginator& paginator() const { return *paginator_; }
 
+    /// Книга, развёрнутая в блоки, — мастер-список для оглавления и поиска.
+    /// Пагинатор смотрит в него же, но по одной главе за раз.
+    std::span<const typography::Block> blocks() const { return blocks_; }
+
     /// Часть-картинка книги как она лежит в пакете. Нужна тому, кто вынимает
     /// обложку: рисовать её незачем, надо положить байты в кэш.
     const fb3::ImagePart* image(std::uint32_t index) const;
@@ -98,6 +103,11 @@ private:
     std::filesystem::path path_;
     fb3::Document document_;
     typography::Engine engine_;
+
+    /// Книга, развёрнутая в блоки, — мастер-список: на нём стоят оглавление и
+    /// поиск, и в него же (видом, не копией) смотрит пагинатор — по одной главе
+    /// за раз. Заводится до пагинатора и живёт дольше: тот держит вид в него.
+    std::vector<typography::Block> blocks_;
     std::unique_ptr<typography::Paginator> paginator_;
 
     Microsoft::WRL::ComPtr<IWICImagingFactory> wic_;

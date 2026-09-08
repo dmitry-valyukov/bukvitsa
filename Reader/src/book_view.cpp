@@ -537,7 +537,7 @@ void BookView::open(std::shared_ptr<Book> book, std::uint32_t charOffset) {
 
 std::span<const typography::Block> BookView::blocks() const {
     if (!book_) return {};
-    return book_->paginator().blocks();
+    return book_->blocks();
 }
 
 std::size_t BookView::pageCount() const {

@@ -66,12 +66,15 @@ struct Page {
 /// пересчитывается, а позиции чтения остаются те же, потому что они в символах.
 class Paginator {
 public:
+    /// @param blocks блоки книги — вид, не копия: пагинатор их не меняет и не
+    ///        владеет ими, поэтому список обязан его пережить. Держит его Book,
+    ///        и пагинатор смотрит в одну её главу за раз.
     /// @param characterCount полный размер книги в символах — знаменатель
     ///        прогресса; по блокам его не восстановить, потому что вёрстка
     ///        выбрасывает пробелы между ними.
     /// @param imageSize размеры картинки по её индексу в книге; вёрстка
     ///        картинок не декодирует, поэтому спрашивает у приложения.
-    Paginator(Engine& engine, std::vector<Block> blocks, std::uint32_t characterCount,
+    Paginator(Engine& engine, std::span<const Block> blocks, std::uint32_t characterCount,
               std::function<ImageSize(std::uint32_t)> imageSize = {});
     ~Paginator();
 

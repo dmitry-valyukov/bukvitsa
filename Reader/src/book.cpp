@@ -29,8 +29,9 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
 
     // Пагинатор спрашивает размеры картинок у нас: вёрстка не декодирует
     // картинки и знать про WIC не должна.
+    blocks_ = typography::flatten(document_.body());
     paginator_ = std::make_unique<typography::Paginator>(
-        engine_, typography::flatten(document_.body()), document_.characterCount(),
+        engine_, blocks_, document_.characterCount(),
         [this](std::uint32_t index) {
             if (index >= images_.size())
                 return typography::ImageSize{};
