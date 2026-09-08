@@ -860,6 +860,12 @@ void BookView::relayoutNow() {
         return;
     }
 
+    // Пагинатор верстает по одной главе: наводим его на ту, где стоит читатель,
+    // прежде чем считать. Та же глава — вызов ничего не делает, и тяга кегля не
+    // пере-шейпит; другая (открыли книгу на запомненном месте) — глава
+    // посчитается заново.
+    book_->setCurrentChapter(readingPosition_);
+
     const float margin = width_ * marginFraction_;
     const float statusHeight = fontSize_ * 1.6f;
 
@@ -946,10 +952,20 @@ void BookView::paginateChunk(std::uint32_t epoch) {
 }
 
 std::size_t BookView::catchUpTo(std::uint32_t charOffset) {
+    // Место может лежать в другой главе — наводим пагинатор на неё.
+    book_->setCurrentChapter(charOffset);
+
     typography::Paginator& paginator = book_->paginator();
 
+    // Набор главы мог быть ещё не начат — сменилась глава, или перевёрстка ещё
+    // не дошла до фоновой порции. Тогда advanceTo читал бы пустой laidOut;
+    // заводим его тем стилем, что стоит сейчас. Начатый набор (у него уже есть
+    // страницы) это не тронет.
+    if (paginator.pageCount() == 0)
+        paginator.beginLayout(pageStyle_);
+
     // Энергично, без срока: порции хороши, пока читатель читает, а он ждёт
-    // ответа. Остаток книги при этом по-прежнему добирается порциями — та,
+    // ответа. Остаток главы при этом по-прежнему добирается порциями — та,
     // что уже стоит в очереди, просто продолжит с того, на чём мы кончили.
     paginator.advanceTo(charOffset);
     if (paginator.pageCount() == 0) return 0;

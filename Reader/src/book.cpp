@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <iterator>
 #include <stdexcept>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
@@ -30,6 +32,16 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
     // Пагинатор спрашивает размеры картинок у нас: вёрстка не декодирует
     // картинки и знать про WIC не должна.
     blocks_ = typography::flatten(document_.body());
+
+    // Границы глав верхнего уровня: начало книги и каждый блок, открывающий
+    // секцию верхнего уровня. По ним пагинатор верстает книгу по одной главе.
+    if (!blocks_.empty()) {
+        chapterStarts_.push_back(0);
+        for (std::size_t i = 1; i < blocks_.size(); ++i)
+            if (blocks_[i].startsSection == 1)
+                chapterStarts_.push_back(i);
+    }
+
     paginator_ = std::make_unique<typography::Paginator>(
         engine_, blocks_, document_.characterCount(),
         [this](std::uint32_t index) {
@@ -40,6 +52,37 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
 }
 
 Book::~Book() = default;
+
+bool Book::setCurrentChapter(std::uint32_t charOffset) {
+    if (chapterStarts_.empty())
+        return false;
+
+    // Блок, внутри которого лежит символ, — последний, начинающийся не позже.
+    const auto blockIt = std::upper_bound(
+        blocks_.begin(), blocks_.end(), charOffset,
+        [](std::uint32_t off, const typography::Block& b) { return off < b.charOffset; });
+    const std::size_t block =
+        blockIt == blocks_.begin()
+            ? 0
+            : static_cast<std::size_t>(std::distance(blocks_.begin(), blockIt) - 1);
+
+    // Глава — последнее её начало не позже этого блока.
+    const auto chapterIt =
+        std::upper_bound(chapterStarts_.begin(), chapterStarts_.end(), block);
+    const std::size_t chapter =
+        static_cast<std::size_t>(std::distance(chapterStarts_.begin(), chapterIt) - 1);
+
+    if (chapter == currentChapter_)
+        return false;
+
+    currentChapter_ = chapter;
+    const std::size_t first = chapterStarts_[chapter];
+    const std::size_t last =
+        chapter + 1 < chapterStarts_.size() ? chapterStarts_[chapter + 1] : blocks_.size();
+    paginator_->setChapter(
+        std::span<const typography::Block>(blocks_).subspan(first, last - first));
+    return true;
+}
 
 void Book::decodeImages() {
     const std::span<const fb3::ImagePart> parts = document_.images();

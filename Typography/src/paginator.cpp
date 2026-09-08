@@ -399,6 +399,24 @@ struct Paginator::Impl {
         : engine(engine_), blocks(blocks_), imageSize(std::move(imageSize_)),
           characterCount(characterCount_) {}
 
+    /// Наводит набор на другую главу. Всё, посчитанное для прежней,
+    /// сбрасывается: шейпинг индексирован по её блокам, а страницы держат её
+    /// строки. Заводит главу заново следующий beginLayout/draftAt.
+    void setChapter(std::span<const Block> chapter) {
+        blocks = chapter;
+        shaped.clear();
+        laidOut.clear();
+        book.pages.clear();
+        layoutCursor = 0;
+        lastNonEmpty = 0;
+        complete = blocks.empty();
+        draftBlocks.clear();
+        draft.pages.clear();
+        draftCursor = 0;
+        draftFirstChar = 0;
+        draftDone = true;
+    }
+
     /* ---------------- вёрстка блока ---------------- */
 
     /// Картинка вписывается в полосу с сохранением пропорций и не занимает
@@ -617,6 +635,8 @@ void Paginator::setStyle(const PageStyle& style) {
     impl_->beginLayout(style);
     impl_->run(std::nullopt);
 }
+
+void Paginator::setChapter(std::span<const Block> blocks) { impl_->setChapter(blocks); }
 
 void Paginator::beginLayout(const PageStyle& style) { impl_->beginLayout(style); }
 
