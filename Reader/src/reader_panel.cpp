@@ -285,7 +285,7 @@ UIElement ReaderPanel::buildSettings() {
 
     fontSize_ = slider(10, 48, 1);
     lineHeight_ = slider(100, 240, 5);
-    margin_ = slider(50, 1000, 25);
+    margin_ = slider(2, 25, 0.5);
 
     fontSize_.value().add_onValueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
         if (filling_) return;

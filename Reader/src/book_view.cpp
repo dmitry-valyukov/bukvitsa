@@ -658,10 +658,10 @@ void BookView::setLineHeight(float multiplier) {
     requestRelayout();
 }
 
-void BookView::setMargin(float ems) {
-    const float wanted = std::clamp(ems, 0.5f, 10.0f);
-    if (wanted == marginEms_) return;
-    marginEms_ = wanted;
+void BookView::setMargin(float fraction) {
+    const float wanted = std::clamp(fraction, 0.02f, 0.25f);
+    if (wanted == marginFraction_) return;
+    marginFraction_ = wanted;
     requestRelayout();
 }
 
@@ -810,14 +810,14 @@ float BookView::characterWidth() const {
 }
 
 float BookView::lineChars(int columns) const {
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
     const float available = width_ - margin * 2.0f;
     const float gutters = margin * kGutterOfMargin * static_cast<float>(columns - 1);
     return (available - gutters) / static_cast<float>(columns) / characterWidth();
 }
 
 int BookView::chooseColumns(bool sticky) const {
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
     if (width_ - margin * 2.0f <= 0.0f) return 1;
 
     // Колонки заполняют место между полями целиком, поэтому мера решает
@@ -860,7 +860,7 @@ void BookView::relayoutNow() {
         return;
     }
 
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
     const float statusHeight = fontSize_ * 1.6f;
 
     columns_ = chooseColumns(windowResize_);
@@ -1633,7 +1633,7 @@ void BookView::goToCharOffset(std::uint32_t charOffset) {
 float BookView::columnLeft(std::size_t index) const {
     if (!book_) return 0.0f;
 
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
     const float column = book_->paginator().style().width;
     const float gutter = margin * kGutterOfMargin;
 
@@ -1646,7 +1646,7 @@ float BookView::spine() const {
     // Считается от колонок, а не как половина полосы. Поля симметричны, и
     // ответ тот же, но зависеть от этого незачем: корешок — это середина
     // средника, и сказано это должно быть про средник.
-    const float gutter = fontSize_ * marginEms_ * kGutterOfMargin;
+    const float gutter = width_ * marginFraction_ * kGutterOfMargin;
     return columnLeft(1) - gutter * 0.5f;
 }
 
@@ -1943,7 +1943,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
 
 void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = paper();
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;
