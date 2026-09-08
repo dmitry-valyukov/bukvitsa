@@ -172,14 +172,14 @@ public:
         return S_OK;
     }
 
-    const std::vector<DWRITE_SCRIPT_ANALYSIS>& scripts() const { return scripts_; }
-    const std::vector<std::uint8_t>& levels() const { return levels_; }
-    const std::vector<DWRITE_LINE_BREAKPOINT>& breakpoints() const { return breaks_; }
+    const pool_vector<DWRITE_SCRIPT_ANALYSIS>& scripts() const { return scripts_; }
+    const pool_vector<std::uint8_t>& levels() const { return levels_; }
+    const pool_vector<DWRITE_LINE_BREAKPOINT>& breakpoints() const { return breaks_; }
 
 private:
-    std::vector<DWRITE_SCRIPT_ANALYSIS> scripts_;
-    std::vector<std::uint8_t> levels_;
-    std::vector<DWRITE_LINE_BREAKPOINT> breaks_;
+    pool_vector<DWRITE_SCRIPT_ANALYSIS> scripts_;
+    pool_vector<std::uint8_t> levels_;
+    pool_vector<DWRITE_LINE_BREAKPOINT> breaks_;
 };
 
 /* ================================================================== */
@@ -202,11 +202,11 @@ struct FormatRun {
 /// нарезать прогон по границе строки, ни разложить выключку обратно.
 struct ShapedRun {
     FormatRun format;
-    std::vector<std::uint16_t> glyphIndices;
-    std::vector<std::uint16_t> clusterMap;   ///< на символ: индекс первого глифа кластера
-    std::vector<float> advances;
-    std::vector<DWRITE_GLYPH_OFFSET> offsets;
-    std::vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
+    pool_vector<std::uint16_t> glyphIndices;
+    pool_vector<std::uint16_t> clusterMap;   ///< на символ: индекс первого глифа кластера
+    pool_vector<float> advances;
+    pool_vector<DWRITE_GLYPH_OFFSET> offsets;
+    pool_vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
     float ascent = 0.0f;
     float descent = 0.0f;
 };
@@ -215,7 +215,7 @@ struct ShapedRun {
 /// они посчитаны по исходному тексту, которого у нарезанной строки уже нет.
 struct LineRun {
     GlyphRun glyphs;
-    std::vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
+    pool_vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
 };
 
 /// Ключ кэша шрифтов: семейство плюс начертание.
@@ -239,8 +239,8 @@ struct ShapedParagraph::Data {
     /// ссылаются на его текст, поэтому пережить его нельзя (см. заголовок).
     const Paragraph* paragraph = nullptr;
 
-    std::vector<ShapedRun> runs;
-    std::vector<DWRITE_LINE_BREAKPOINT> breakpoints;
+    pool_vector<ShapedRun> runs;
+    pool_vector<DWRITE_LINE_BREAKPOINT> breakpoints;
 
     /// Кегль, на котором посчитаны метрики прогонов.
     float referenceFontSize = 0.0f;
@@ -340,7 +340,7 @@ struct Engine::Impl {
 
     /// Режет прогон стиля на куски, каждому из которых нашёлся свой шрифт.
     /// Без фолбэка кусок один: базовый шрифт на всё.
-    void appendFontRuns(std::vector<FormatRun>& runs, const FormatRun& prototype, const wchar_t* text,
+    void appendFontRuns(pool_vector<FormatRun>& runs, const FormatRun& prototype, const wchar_t* text,
                         std::uint32_t textLength, const wchar_t* family, bool bold, bool italic) {
         const std::uint32_t end = prototype.start + prototype.length;
 
@@ -407,12 +407,15 @@ struct Engine::Impl {
     }
 
     /// Пересечение всех разбиений сразу: стиль, письменность, направление, шрифт.
-    std::vector<FormatRun> formatRuns(const Paragraph& paragraph, const ParagraphStyle& blockStyle,
+    pool_vector<FormatRun> formatRuns(const Paragraph& paragraph, const ParagraphStyle& blockStyle,
                                       const AnalysisSink& analysis) {
         const auto textLength = static_cast<std::uint32_t>(paragraph.text.size());
-        std::vector<FormatRun> runs;
+        pool_vector<FormatRun> runs;
 
         // Абзац без разметки — тот же абзац: один прогон стиля по умолчанию.
+        // std::vector, а не пул: список подставляется вместо paragraph.spans
+        // (модель книги, обычная куча), и в тернарном выборе типы обязаны
+        // совпасть. Один элемент — цена пренебрежимая.
         const std::vector<StyleSpan> whole{StyleSpan{0, textLength, FontStyle{}}};
         const std::vector<StyleSpan>& spans = paragraph.spans.empty() ? whole : paragraph.spans;
 
@@ -494,8 +497,8 @@ struct Engine::Impl {
         const UINT32 rangeCount = wantsFeatures ? 1 : 0;
 
         shaped.clusterMap.resize(length);
-        std::vector<DWRITE_SHAPING_TEXT_PROPERTIES> textProperties(length);
-        std::vector<DWRITE_SHAPING_GLYPH_PROPERTIES> glyphProperties;
+        pool_vector<DWRITE_SHAPING_TEXT_PROPERTIES> textProperties(length);
+        pool_vector<DWRITE_SHAPING_GLYPH_PROPERTIES> glyphProperties;
 
         UINT32 maxGlyphs = 3 * length / 2 + 16;
         UINT32 actualGlyphs = 0;
@@ -581,7 +584,7 @@ struct Engine::Impl {
 
         into.breakpoints = analysis.breakpoints();
 
-        const std::vector<FormatRun> formats = formatRuns(paragraph, blockStyle, analysis);
+        const pool_vector<FormatRun> formats = formatRuns(paragraph, blockStyle, analysis);
         into.runs.reserve(formats.size());
 
         for (const FormatRun& format : formats) {
@@ -607,14 +610,14 @@ struct Engine::Impl {
     /// Иначе алгоритм выбирает строку, надеясь сжать пробелы сильнее, чем
     /// выключка потом сумеет, — и строка вылезает за поле.
     struct CharacterMetrics {
-        std::vector<float> width;
-        std::vector<float> shrink;
+        pool_vector<float> width;
+        pool_vector<float> shrink;
     };
 
-    static CharacterMetrics characterMetrics(const std::vector<ShapedRun>& runs,
+    static CharacterMetrics characterMetrics(const pool_vector<ShapedRun>& runs,
                                              std::uint32_t textLength, float scale) {
-        CharacterMetrics metrics{std::vector<float>(textLength, 0.0f),
-                                 std::vector<float>(textLength, 0.0f)};
+        CharacterMetrics metrics{pool_vector<float>(textLength, 0.0f),
+                                 pool_vector<float>(textLength, 0.0f)};
 
         for (const ShapedRun& run : runs) {
             const std::uint32_t start = run.format.start;
@@ -654,13 +657,13 @@ struct Engine::Impl {
     /// @param from символ, с которого начинается набор. Не ноль тогда, когда
     ///        страница начата с середины абзаца: мгновенная вёрстка ставит
     ///        первую строку ровно с места чтения, а не с красной строки.
-    static std::vector<BreakItem> breakItems(const Paragraph& paragraph,
+    static pool_vector<BreakItem> breakItems(const Paragraph& paragraph,
                                              const CharacterMetrics& metrics,
-                                             const std::vector<DWRITE_LINE_BREAKPOINT>& points,
+                                             const pool_vector<DWRITE_LINE_BREAKPOINT>& points,
                                              bool ragged, float maxWidth, std::uint32_t from) {
         const auto textLength = static_cast<std::uint32_t>(paragraph.text.size());
 
-        std::vector<BreakItem> items;
+        pool_vector<BreakItem> items;
         items.reserve((textLength - from) / 4 + 8);
 
         // Слово, которое не помещается в полосу целиком (длинный адрес,
@@ -887,7 +890,7 @@ struct Engine::Impl {
     /// алгоритма BiDi): последовательности уровня не ниже текущего
     /// переворачиваются, начиная с самого высокого уровня и вниз до самого
     /// низкого нечётного.
-    static void reorderVisually(std::vector<LineRun>& runs) {
+    static void reorderVisually(pool_vector<LineRun>& runs) {
         if (runs.size() < 2)
             return;
 
@@ -917,13 +920,13 @@ struct Engine::Impl {
 
     /// Раздвигает строку до полосы. Ширины считает DirectWrite: он знает, где
     /// в этой письменности можно добавить, а где нельзя.
-    void justify(std::vector<LineRun>& runs, float available) {
+    void justify(pool_vector<LineRun>& runs, float available) {
         if (!analyzer1)
             return;
 
-        std::vector<float> advances;
-        std::vector<DWRITE_GLYPH_OFFSET> offsets;
-        std::vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
+        pool_vector<float> advances;
+        pool_vector<DWRITE_GLYPH_OFFSET> offsets;
+        pool_vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
 
         for (const LineRun& run : runs) {
             advances.insert(advances.end(), run.glyphs.advances.begin(), run.glyphs.advances.end());
@@ -935,8 +938,8 @@ struct Engine::Impl {
         if (glyphCount == 0)
             return;
 
-        std::vector<float> justified(glyphCount);
-        std::vector<DWRITE_GLYPH_OFFSET> justifiedOffsets(glyphCount);
+        pool_vector<float> justified(glyphCount);
+        pool_vector<DWRITE_GLYPH_OFFSET> justifiedOffsets(glyphCount);
 
         // Неудача здесь — не повод сдаться: строку всё равно надо уместить, и
         // ниже это доделает равномерное сжатие. Поэтому берём исходные ширины
@@ -1052,13 +1055,13 @@ pool_vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_
 
     /* 1-3. Анализ, прогоны формата и шейпинг уже сделаны — берём готовое.
        Кегль подгоняется отношением: метрики шейпинга линейны по нему. */
-    const std::vector<ShapedRun>& shaped = data->runs;
+    const pool_vector<ShapedRun>& shaped = data->runs;
     const float scale = style.fontSize / data->referenceFontSize;
 
     /* 4-5. Переломы. */
     const bool ragged = style.alignment != Alignment::Justify;
     const Impl::CharacterMetrics metrics = Impl::characterMetrics(shaped, textLength, scale);
-    const std::vector<BreakItem> items =
+    const pool_vector<BreakItem> items =
         Impl::breakItems(paragraph, metrics, data->breakpoints, ragged, width, firstChar);
 
     // Отступ первой строки — свойство начала абзаца, а не начала полосы.
@@ -1091,7 +1094,7 @@ pool_vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_
         const BreakItem& at = items[breaks[index]];
         const std::uint32_t to = std::max(from, at.textPosition);
 
-        std::vector<LineRun> runs;
+        pool_vector<LineRun> runs;
         Line line;
         line.textStart = from;
         line.textLength = to - from;
