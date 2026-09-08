@@ -527,6 +527,36 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     }
     check(roundTrip, "по позиции чтения находится своя страница");
 
+    // Каждая глава верхнего уровня начинается с новой страницы: символ, с
+    // которого начинается её первый блок, обязан быть началом какой-то
+    // страницы, а не серединой чужой. Подсекции (startsSection > 1) сюда не
+    // входят — они текут внутри своей главы.
+    std::size_t chapters = 0;
+    std::size_t chaptersChecked = 0;
+    bool chaptersStartPages = true;
+    for (const typography::Block& block : blocks) {
+        if (block.startsSection != 1) continue;
+        ++chapters;
+
+        // Главу, начинающуюся не текстом (картинкой, разделителем), этот тест
+        // проверить не может: пагинатору здесь не дан размер картинок, и
+        // картинка на полосу ничего не кладёт, а значит и страницы собой не
+        // начинает. В самой читалке размер есть — там такая глава страницу
+        // начинает; здесь ограничиваемся текстовыми началами, а их
+        // большинство.
+        if (block.paragraph.charOffsets.empty()) continue;
+        ++chaptersChecked;
+
+        // Начало страницы — это первый поставленный на неё символ, а он у
+        // текстового блока лежит в charOffsets (после свёрнутых пробелов), а не
+        // в charOffset узла: у заголовка с отбивкой перед текстом они разные.
+        const std::uint32_t firstChar = block.paragraph.charOffsets.front();
+        const std::size_t at = paginator.pageForCharOffset(firstChar);
+        if (paginator.page(at).firstCharOffset != firstChar) chaptersStartPages = false;
+    }
+    std::printf("  глав верхнего уровня: %zu (текстовых проверено: %zu)\n", chapters, chaptersChecked);
+    check(chaptersStartPages, "каждая глава начинается с новой страницы");
+
     // Блоки, отданные наружу: на них стоят оглавление, поиск и переход по
     // закладке. Проверяется, что это те же блоки, что верстались, и что
     // позиции в них не убывают -- то, на что опирается поиск места по книге.

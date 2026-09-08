@@ -265,6 +265,13 @@ struct PageBuilder {
         while (block < limit) {
             const LaidOutBlock& item = blocks[block];
 
+            // Глава начинается с новой страницы. Перед первым блоком главы
+            // верхнего уровня закрываем полосу, если на ней уже что-то есть;
+            // пустую не трогаем — иначе первая глава книги гнала бы за собой
+            // пустую страницу. Подсекции (startsSection > 1) не разрывают.
+            if (item.source && item.source->startsSection == 1 && used > 0.0f)
+                flushPage();
+
             if (item.isImage) {
                 if (item.image.height > 0.0f) {
                     const float needed = item.spaceBefore + item.image.height + item.spaceAfter;
