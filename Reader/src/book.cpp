@@ -78,7 +78,7 @@ bool Book::setCurrentChapter(std::uint32_t charOffset) {
     currentChapter_ = chapter;
     // Заводим её в кэше (шейпинг соседних при этом не пропадает) и сбрасываем
     // раскладку под свежий стиль — переложит её читалка.
-    ensureChapter(chapter).resetLayout();
+    chapterAt(chapter).resetLayout();
     return true;
 }
 
@@ -89,35 +89,33 @@ std::span<const typography::Block> Book::chapterSpan(std::size_t index) const {
     return std::span<const typography::Block>(blocks_).subspan(first, last - first);
 }
 
-typography::Chapter& Book::ensureChapter(std::size_t index) {
+typography::Chapter& Book::chapterAt(std::size_t index) {
     if (auto it = chapters_.find(index); it != chapters_.end())
         return *it->second;
 
-    chapters_.emplace(index, std::make_unique<typography::Chapter>(
-                                 engine_, chapterSpan(index), document_.characterCount(), imageSize_));
+    // Ничего не выбрасываем: разворот на стыке держит указатели в страницы
+    // сразу нескольких глав, и уронить любую из них — висячий указатель.
+    // Чистит кэш trimChapters, когда разворот уже собран.
+    auto [pos, inserted] = chapters_.emplace(
+        index, std::make_unique<typography::Chapter>(engine_, chapterSpan(index),
+                                                     document_.characterCount(), imageSize_));
+    return *pos->second;
+}
 
-    // Кэш держим маленьким: горстка глав вокруг нужной. Лишние — самые дальние
-    // от только что заведённой — выбрасываем; её саму и текущую оставляем.
-    constexpr std::size_t kCacheSize = 4;
-    while (chapters_.size() > kCacheSize) {
-        auto worst = chapters_.end();
-        std::size_t worstDist = 0;
-        for (auto cand = chapters_.begin(); cand != chapters_.end(); ++cand) {
-            if (cand->first == index || cand->first == currentChapter_)
-                continue;
-            const std::size_t dist =
-                cand->first > index ? cand->first - index : index - cand->first;
-            if (worst == chapters_.end() || dist > worstDist) {
-                worstDist = dist;
-                worst = cand;
-            }
-        }
-        if (worst == chapters_.end())
-            break;
-        chapters_.erase(worst);
+void Book::trimChapters(std::size_t keepRadius) {
+    // До первой наводки текущей главы нет — трогать нечего, а расстояние до
+    // npos переполнилось бы и вымело весь кэш.
+    if (currentChapter_ == static_cast<std::size_t>(-1))
+        return;
+
+    for (auto it = chapters_.begin(); it != chapters_.end();) {
+        const std::size_t dist = it->first > currentChapter_ ? it->first - currentChapter_
+                                                             : currentChapter_ - it->first;
+        if (dist > keepRadius)
+            it = chapters_.erase(it);
+        else
+            ++it;
     }
-
-    return *chapters_.at(index);
 }
 
 void Book::decodeImages() {
