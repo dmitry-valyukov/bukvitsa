@@ -12,6 +12,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <optional>
@@ -74,8 +76,12 @@ public:
     /// шрифтами и тем же кэшем, что и страницу.
     typography::Engine& engine() { return engine_; }
 
-    typography::Chapter& paginator() { return *paginator_; }
-    const typography::Chapter& paginator() const { return *paginator_; }
+    /// Размеченная текущая глава — из кэша, заведена по требованию и разложена
+    /// читалкой под её стиль. Кэш держит ещё и соседние главы, чтобы у границы
+    /// были под рукой обе; шейпинг каждой переживает переходы между ними.
+    typography::Chapter& paginator() {
+        return ensureChapter(currentChapter_ == static_cast<std::size_t>(-1) ? 0 : currentChapter_);
+    }
 
     /// Книга, развёрнутая в блоки, — мастер-список для оглавления и поиска.
     /// Пагинатор смотрит в него же, но по одной главе за раз.
@@ -118,23 +124,37 @@ public:
 private:
     void decodeImages();
 
+    /// Заводит главу в кэше, если её там нет, и отдаёт. Дальние главы при этом
+    /// выбрасываются — в памяти держится лишь горстка вокруг текущей.
+    typography::Chapter& ensureChapter(std::size_t index);
+
+    /// Блоки главы — вид в мастер-список.
+    std::span<const typography::Block> chapterSpan(std::size_t index) const;
+
     std::filesystem::path path_;
     fb3::Document document_;
     typography::Engine engine_;
 
     /// Книга, развёрнутая в блоки, — мастер-список: на нём стоят оглавление и
-    /// поиск, и в него же (видом, не копией) смотрит пагинатор — по одной главе
-    /// за раз. Заводится до пагинатора и живёт дольше: тот держит вид в него.
+    /// поиск, и в него же (видом, не копией) смотрят главы — каждая по своему
+    /// куску. Заводится до глав и живёт дольше их: они держат вид в него.
     std::vector<typography::Block> blocks_;
-    std::unique_ptr<typography::Chapter> paginator_;
 
-    /// Индексы блоков — начала глав верхнего уровня; [0] всегда 0. Пагинатор
-    /// верстает по одной главе, а это её границы в мастер-списке.
+    /// Размеры картинок по индексу — вёрстка их спрашивает у нас, а декодирует
+    /// WIC. Хранится, чтобы отдавать каждой заводимой главе.
+    std::function<typography::ImageSize(std::uint32_t)> imageSize_;
+
+    /// Кэш размеченных глав: индекс → её объект. Держит текущую и соседние
+    /// (дальние выбрасываются), чтобы на границе были обе главы разом, а шейпинг
+    /// не считался заново при возврате к главе.
+    std::map<std::size_t, std::unique_ptr<typography::Chapter>> chapters_;
+
+    /// Индексы блоков — начала глав верхнего уровня; [0] всегда 0. Это границы
+    /// глав в мастер-списке: по ним книга режется на главы.
     std::vector<std::size_t> chapterStarts_;
 
-    /// Глава, на которую наведён пагинатор. npos — ещё ни на какую: в
-    /// конструкторе пагинатор смотрит на всю книгу, поэтому первый
-    /// setCurrentChapter срабатывает всегда.
+    /// Текущая глава — та, что показывают. npos — ещё ни одной: paginator()
+    /// тогда заведёт нулевую, а первый setCurrentChapter наведёт на нужную.
     std::size_t currentChapter_ = static_cast<std::size_t>(-1);
 
     Microsoft::WRL::ComPtr<IWICImagingFactory> wic_;

@@ -34,7 +34,7 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
     blocks_ = typography::flatten(document_.body());
 
     // Границы глав верхнего уровня: начало книги и каждый блок, открывающий
-    // секцию верхнего уровня. По ним пагинатор верстает книгу по одной главе.
+    // секцию верхнего уровня. По ним книга режется на главы.
     if (!blocks_.empty()) {
         chapterStarts_.push_back(0);
         for (std::size_t i = 1; i < blocks_.size(); ++i)
@@ -42,13 +42,13 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
                 chapterStarts_.push_back(i);
     }
 
-    paginator_ = std::make_unique<typography::Chapter>(
-        engine_, blocks_, document_.characterCount(),
-        [this](std::uint32_t index) {
-            if (index >= images_.size())
-                return typography::ImageSize{};
-            return typography::ImageSize{images_[index].width, images_[index].height};
-        });
+    // Главы заводятся по требованию (ensureChapter); размеры картинок каждой из
+    // них нужны у нас — вёрстка их не декодирует и про WIC не знает.
+    imageSize_ = [this](std::uint32_t index) {
+        if (index >= images_.size())
+            return typography::ImageSize{};
+        return typography::ImageSize{images_[index].width, images_[index].height};
+    };
 }
 
 Book::~Book() = default;
@@ -76,12 +76,48 @@ bool Book::setCurrentChapter(std::uint32_t charOffset) {
         return false;
 
     currentChapter_ = chapter;
-    const std::size_t first = chapterStarts_[chapter];
-    const std::size_t last =
-        chapter + 1 < chapterStarts_.size() ? chapterStarts_[chapter + 1] : blocks_.size();
-    paginator_->setChapter(
-        std::span<const typography::Block>(blocks_).subspan(first, last - first));
+    // Заводим её в кэше (шейпинг соседних при этом не пропадает) и сбрасываем
+    // раскладку под свежий стиль — переложит её читалка.
+    ensureChapter(chapter).resetLayout();
     return true;
+}
+
+std::span<const typography::Block> Book::chapterSpan(std::size_t index) const {
+    const std::size_t first = chapterStarts_[index];
+    const std::size_t last =
+        index + 1 < chapterStarts_.size() ? chapterStarts_[index + 1] : blocks_.size();
+    return std::span<const typography::Block>(blocks_).subspan(first, last - first);
+}
+
+typography::Chapter& Book::ensureChapter(std::size_t index) {
+    if (auto it = chapters_.find(index); it != chapters_.end())
+        return *it->second;
+
+    chapters_.emplace(index, std::make_unique<typography::Chapter>(
+                                 engine_, chapterSpan(index), document_.characterCount(), imageSize_));
+
+    // Кэш держим маленьким: горстка глав вокруг нужной. Лишние — самые дальние
+    // от только что заведённой — выбрасываем; её саму и текущую оставляем.
+    constexpr std::size_t kCacheSize = 4;
+    while (chapters_.size() > kCacheSize) {
+        auto worst = chapters_.end();
+        std::size_t worstDist = 0;
+        for (auto cand = chapters_.begin(); cand != chapters_.end(); ++cand) {
+            if (cand->first == index || cand->first == currentChapter_)
+                continue;
+            const std::size_t dist =
+                cand->first > index ? cand->first - index : index - cand->first;
+            if (worst == chapters_.end() || dist > worstDist) {
+                worstDist = dist;
+                worst = cand;
+            }
+        }
+        if (worst == chapters_.end())
+            break;
+        chapters_.erase(worst);
+    }
+
+    return *chapters_.at(index);
 }
 
 void Book::decodeImages() {

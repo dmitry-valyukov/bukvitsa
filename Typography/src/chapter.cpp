@@ -399,12 +399,10 @@ struct Chapter::Impl {
         : engine(engine_), blocks(blocks_), imageSize(std::move(imageSize_)),
           characterCount(characterCount_) {}
 
-    /// Наводит набор на другую главу. Всё, посчитанное для прежней,
-    /// сбрасывается: шейпинг индексирован по её блокам, а страницы держат её
-    /// строки. Заводит главу заново следующий beginLayout/draftAt.
-    void setChapter(std::span<const Block> chapter) {
-        blocks = chapter;
-        shaped.clear();
+    /// Сбрасывает раскладку главы под новый стиль — строки, страницы, набор, —
+    /// но шейпинг сохраняет: он от кегля и полосы не зависит, посчитан один раз
+    /// и переживёт перевёрстку. Блоки главы те же — глава одна на объект.
+    void resetLayout() {
         laidOut.clear();
         book.pages.clear();
         layoutCursor = 0;
@@ -636,7 +634,7 @@ void Chapter::setStyle(const PageStyle& style) {
     impl_->run(std::nullopt);
 }
 
-void Chapter::setChapter(std::span<const Block> blocks) { impl_->setChapter(blocks); }
+void Chapter::resetLayout() { impl_->resetLayout(); }
 
 void Chapter::beginLayout(const PageStyle& style) { impl_->beginLayout(style); }
 
