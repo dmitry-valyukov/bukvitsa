@@ -855,7 +855,6 @@ void BookView::relayoutNow() {
     resetSheets();
 
     if (!book_ || width_ <= 0.0f || height_ <= 0.0f) {
-        draft_ = false;
         redraw();
         return;
     }
@@ -886,43 +885,56 @@ void BookView::relayoutNow() {
 
     pageStyle_ = style;
 
-    // Вот ради чего позиции чтения хранятся в символах: полоса стала другой, а
-    // читатель остался на том же месте — и видит его сейчас же. Грязная
-    // страница начинается ровно с той буквы, на которой он стоял, и считается
-    // за единицы миллисекунд, потому что считает только то, что видно.
+    // Вот ради чего книга режется на главы: полоса стала другой, а перевёрстка
+    // считает не всю книгу, а одну текущую главу — единицы миллисекунд, — и
+    // потому идёт начисто прямо здесь, в обработчике события. Черновика больше
+    // нет: с разбивкой по главам чистовой набор сам достаточно дёшев.
     //
-    // Место чтения при этом не двигается ни на символ. Раньше оно прижималось
-    // к началу свежей страницы, и от каждой смены кегля прогресс чуть уезжал;
-    // теперь прижимать не к чему — страница начинается с него самого.
-    //
-    book_->paginator().draftAt(pageStyle_, readingPosition_,
-                               static_cast<std::size_t>(columns_));
-    draft_ = true;
-    numberKnown_ = false;
+    // Досчитываем ровно до видимого разворота — этого хватает, чтобы показать
+    // страницу; остаток главы добирается порциями в простое, и с него
+    // становится известно общее число страниц («из M»).
+    typography::Chapter& paginator = book_->paginator();
+    paginator.beginLayout(pageStyle_);
+    paginator.advanceTo(readingPosition_);
+
+    // Место чтения остаётся на своей колонке: разворот начинается с той, внутри
+    // которой лежала буква. Прижимать к ней читателя нестрашно — колонки при
+    // одном стиле бьются одинаково, так что прищёлк случается лишь однажды, на
+    // смене кегля, а не уезжает с каждой перевёрсткой.
+    page_ = paginator.pageCount() == 0 ? 0 : paginator.pageForCharOffset(readingPosition_);
+    page_ -= page_ % static_cast<std::size_t>(columns_);
+    paginator.advanceToPage(page_ + static_cast<std::size_t>(columns_));
+    if (paginator.pageCount() != 0)
+        readingPosition_ = paginator.page(page_).firstCharOffset;
+
     redraw();
 
-    // А книга набирается начисто следом, порциями и в свободное время потока.
-    startPagination();
+    // Остаток главы — порциями в свободное время потока: с него узнаётся общее
+    // число страниц. Если глава уже досчиталась (короткая), звать нечего.
+    if (!paginator.isComplete())
+        startPagination();
 }
 
 void BookView::startPagination() {
     // Заказ уже в очереди — второй ничего не прибавит: задание всё равно
-    // возьмёт ту полосу, какую застанет, а полоса к тому времени будет
-    // нынешней.
+    // продолжит счёт той главы, какую застанет.
     if (cleanPosted_) return;
     cleanPosted_ = true;
 
     std::weak_ptr<int> alive = alive_;
 
+    // Тот же набор, что relayoutNow уже начал и досчитал до видимого разворота:
+    // его номер — нынешний paginationEpoch_. Порции продолжают счёт с курсора
+    // главы, не начиная заново, — синхронно посчитанные страницы остаются на
+    // месте, а фон лишь добирает хвост главы ради общего числа страниц.
+    const std::uint32_t epoch = paginationEpoch_;
+
     // Низкий приоритет — это и есть «в свободное время»: поток сперва разберёт
     // ввод и покажет нарисованное, а уже потом возьмётся за книгу.
-    queue_.tryEnqueue(DispatcherQueuePriority::Low, [this, alive] {
+    queue_.tryEnqueue(DispatcherQueuePriority::Low, [this, alive, epoch] {
         if (alive.expired()) return;
         cleanPosted_ = false;
         if (!book_) return;
-
-        const std::uint32_t epoch = ++paginationEpoch_;
-        book_->paginator().beginLayout(pageStyle_);
         paginateChunk(epoch);
     });
 }
@@ -932,23 +944,20 @@ void BookView::paginateChunk(std::uint32_t epoch) {
 
     const bool more = book_->paginator().advance(kPaginationSlice);
 
-    // Чистовой набор не подменяет собой то, что читатель видит. Он делит
-    // полосу иначе — с начала книги, а не с места чтения, — и подмена была бы
-    // прыжком текста под глазами. Меняется только колонцифра: у показанного
-    // разворота появляется номер, а у книги — общее число страниц.
-    const bool known = cleanSpread().has_value();
-    bool changed = known != numberKnown_;
-    numberKnown_ = known;
+    // Порции добирают хвост главы, а не то, что видно: видимый разворот уже
+    // посчитан начисто в relayoutNow. Меняется от них лишь общее число страниц
+    // — и то один раз, когда глава досчитана. До тех пор колонцифра показывает
+    // «из …», поэтому и перерисовывать нечего, пока счёт идёт.
+    if (more) {
+        std::weak_ptr<int> alive = alive_;
+        queue_.tryEnqueue(DispatcherQueuePriority::Low, [this, alive, epoch] {
+            if (alive.expired()) return;
+            paginateChunk(epoch);
+        });
+        return;
+    }
 
-    if (!more) changed = true;
-    if (changed) redraw();
-    if (!more) return;
-
-    std::weak_ptr<int> alive = alive_;
-    queue_.tryEnqueue(DispatcherQueuePriority::Low, [this, alive, epoch] {
-        if (alive.expired()) return;
-        paginateChunk(epoch);
-    });
+    redraw();   // глава досчитана: «из …» стало «из M»
 }
 
 std::size_t BookView::catchUpTo(std::uint32_t charOffset) {
@@ -978,79 +987,10 @@ std::size_t BookView::catchUpTo(std::uint32_t charOffset) {
     return at;
 }
 
-std::optional<std::size_t> BookView::cleanSpread() const {
-    if (!book_) return std::nullopt;
-    if (!draft_) return page_;
-
-    const typography::Chapter& paginator = book_->paginator();
-    if (paginator.pageCount() == 0) return std::nullopt;
-
-    // Номер известен, только когда набор ушёл за эту страницу: пока она
-    // последняя, на ней ещё будет место, и номер следующей ещё не решён.
-    if (!paginator.isComplete() &&
-        paginator.page(paginator.pageCount() - 1).firstCharOffset <= readingPosition_)
-        return std::nullopt;
-
-    const std::size_t at = paginator.pageForCharOffset(readingPosition_);
-    return at - at % static_cast<std::size_t>(columns_);
-}
-
-void BookView::turnDraftForward() {
-    // Очередь та же, что и у чистового листания: читатель, нажавший «дальше»
-    // дважды, просил два разворота, а не один.
-    if (turning_ && turnForward_) {
-        ++pending_;
-        return;
-    }
-
-    cancelTurn();
-    startDraftTurn();
-}
-
-void BookView::startDraftTurn() {
-    const auto columns = static_cast<std::size_t>(columns_);
-    typography::Chapter& paginator = book_->paginator();
-
-    // Следующая страница нужна ровно здесь: её первый символ — то место, с
-    // которого начинается новый разворот. Считать её заранее, на каждое
-    // движение мыши, значило бы считать зря, поэтому грязная вёрстка
-    // досчитывается по надобности — и говорит, если досчитывать уже нечего.
-    if (!paginator.draftUpTo(columns + 1)) {
-        // Глава кончилась — уходим в следующую, на её первый разворот.
-        pending_ = 0;
-        crossForward();
-        return;
-    }
-
-    note_.hide();   // страница ушла, а сноска на ней осталась бы висеть
-    readingPosition_ = paginator.draftPage(columns).firstCharOffset;
-    paginator.draftAt(pageStyle_, readingPosition_, columns);
-
-    // Порядок тот же, что и у чистового листания: к началу анимации верная
-    // страница уже нарисована и уже лежит внизу.
-    resting_ = 1 - resting_;
-    redraw();
-
-    if (sheets_) sheets_.value().isVisible(true);   // листы — на время переворота
-
-    if (columns_ == 2) {
-        animateSpreadTurn(true);
-    } else {
-        animateTurn(true);
-    }
-
-    if (onPositionChanged) onPositionChanged(readingPosition_);
-}
-
 const typography::Page* BookView::spreadPage(std::size_t column) const {
     if (!book_) return nullptr;
 
     const typography::Chapter& paginator = book_->paginator();
-    if (draft_) {
-        if (column >= paginator.draftCount()) return nullptr;
-        return &paginator.draftPage(column);
-    }
-
     const std::size_t number = page_ + column;
     if (number >= paginator.pageCount()) return nullptr;
     return &paginator.page(number);
@@ -1089,30 +1029,7 @@ void BookView::redraw() {
 }
 
 void BookView::turnPage(int delta) {
-    if (!book_) return;
-
-    if (draft_) {
-        // Вперёд грязная вёрстка листается сама: следующий разворот считается
-        // тем же способом, что и нынешний, и книга при этом ни при чём.
-        if (delta > 0) {
-            turnDraftForward();
-            return;
-        }
-
-        // А назад — нет. Начало предыдущей страницы известно только тому, кто
-        // набрал главу с начала, поэтому листание назад считается по чистовому
-        // набору. За началом главы уходим в конец предыдущей.
-        const auto columns = static_cast<std::size_t>(columns_);
-        const std::size_t at = catchUpTo(readingPosition_);
-        if (at < columns) {
-            crossBackward();
-            return;
-        }
-        goTo(at - columns);
-        return;
-    }
-
-    if (pageCount() == 0) return;
+    if (!book_ || pageCount() == 0) return;
 
     // Листается разворот целиком: на две колонки читатель за раз прочитывает
     // две страницы, и перелистывать по одной значило бы половину показывать
@@ -1167,22 +1084,6 @@ std::size_t BookView::neighbourSpread(std::size_t page, bool forward) const {
 void BookView::goTo(std::size_t page) {
     if (!book_ || pageCount() == 0) return;
 
-    // Сход с грязной вёрстки. Полоса встаёт на тот чистовой разворот, внутри
-    // которого лежит место чтения, и уже от него листает дальше: у грязной
-    // страницы номера нет, и мерить шаг не от чего. Зовущий к этому времени
-    // уже досчитал набор до нужного места — `catchUpTo`.
-    const bool leftDraft = draft_;
-    if (draft_) {
-        // Очередь листания вместе с ней и кончается: её шаги считались по
-        // грязной вёрстке, а полоса уходит на чистовую, и вести туда, куда
-        // читатель уже не собирается, незачем.
-        cancelTurn();
-
-        draft_ = false;
-        page_ = book_->paginator().pageForCharOffset(readingPosition_);
-        page_ -= page_ % static_cast<std::size_t>(columns_);
-    }
-
     // Номер страницы всегда указывает на начало разворота: с него начинается
     // и отрисовка, и следующий шаг листания.
     std::size_t wanted = std::min(page, pageCount() - 1);
@@ -1191,18 +1092,7 @@ void BookView::goTo(std::size_t page) {
     // Всё меряется от конца очереди: пока идёт переворот, книга считается
     // стоящей там, куда очередь придёт, а не там, где она видна.
     const std::size_t tail = queueEnd();
-    if (wanted == tail && !surface_.empty()) {
-        // Идти некуда — но если полоса только что сошла с грязной вёрстки,
-        // показать чистовую всё равно надо: страница на экране начиналась с
-        // места чтения, а чистовая начинается со своего.
-        if (leftDraft) {
-            readingPosition_ = book_->paginator().page(page_).firstCharOffset;
-            note_.hide();
-            redraw();
-            if (onPositionChanged) onPositionChanged(readingPosition_);
-        }
-        return;   // уже здесь или уже туда идём
-    }
+    if (wanted == tail && !surface_.empty()) return;   // уже здесь или уже туда идём
 
     const bool forward = wanted > tail;
 
@@ -1273,11 +1163,6 @@ void BookView::turnCompleted() {
     }
 
     --pending_;
-    if (draft_) {
-        startDraftTurn();
-        return;
-    }
-
     startTurn(neighbourSpread(page_, turnForward_), turnForward_);
 }
 
@@ -1691,8 +1576,6 @@ void BookView::goToChapterSpread(std::size_t chapter, bool atEnd) {
     paginator.advanceToPage(static_cast<std::size_t>(-1));   // до конца главы
 
     ++paginationEpoch_;   // прежние фоновые порции — от другой главы, они чужие
-    draft_ = false;
-    numberKnown_ = true;
 
     if (paginator.pageCount() == 0) {
         redraw();
@@ -2107,21 +1990,16 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
         // На развороте колонцифра называет обе страницы: читатель видит две, и
         // одна в счётчике расходилась бы с тем, что перед глазами.
         //
-        // Номер известен, только когда чистовой набор ушёл за эту страницу, а
-        // общее число — только когда он кончился. Пока нет — многоточие:
+        // Номер левой колонки известен сразу — видимый разворот посчитан
+        // начисто в тот же кадр. Общее же число страниц главы становится
+        // известно, только когда её набор кончился; пока нет — многоточие:
         // число, которое сейчас сменится другим, хуже честного молчания.
         // Процент при этом верен всегда, потому что считается по символам
-        // книги, а место чтения перевёрстка не двигает.
-        //
-        // На грязной странице номер берётся от чистового набора — по тому же
-        // символу. Страница на экране начинается не там, где чистовая, но
-        // расходятся они меньше чем на страницу, и назвать читателю место в
-        // книге это не мешает.
-        const std::optional<std::size_t> first = cleanSpread();
+        // книги, а место чтения перевёрстка почти не двигает.
+        const std::size_t first = page_;
         const std::wstring numbers =
-            !first          ? std::wstring{L"…"}
-            : drawn <= 1    ? std::format(L"{}", *first + 1)
-                            : std::format(L"{}–{}", *first + 1, *first + drawn);
+            drawn <= 1 ? std::format(L"{}", first + 1)
+                       : std::format(L"{}–{}", first + 1, first + drawn);
         const std::wstring total = book_->paginator().isComplete()
                                        ? std::format(L"{}", std::max<std::size_t>(pageCount(), 1))
                                        : std::wstring{L"…"};
