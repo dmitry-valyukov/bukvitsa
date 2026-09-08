@@ -2125,8 +2125,13 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
         const std::wstring total = book_->paginator().isComplete()
                                        ? std::format(L"{}", std::max<std::size_t>(pageCount(), 1))
                                        : std::wstring{L"…"};
+
+        // Номер и общее число — по главе: пагинатор знает лишь её, и «из M»
+        // здесь значит «из стольких страниц в этой главе». Процент — по всей
+        // книге, по символам; им читатель и меряет весь путь.
         const std::wstring status =
-            std::format(L"{} / {}     {:.0f}%", numbers, total, progress() * 100.0f);
+            std::format(L"Глава {} · стр. {} из {}     {:.0f}%",
+                        book_->currentChapter() + 1, numbers, total, progress() * 100.0f);
         context->DrawText(status.c_str(), static_cast<UINT32>(status.size()), statusFormat_.Get(),
                           D2D1::RectF(margin, height - kVerticalMargin, width - margin, height),
                           dimBrush.Get());
