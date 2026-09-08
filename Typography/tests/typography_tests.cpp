@@ -97,6 +97,9 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
                            std::uint32_t characterCount);
 void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                      std::uint32_t characterCount);
+void testChapterFirstPage(typography::Engine& engine,
+                          const std::vector<typography::Block>& blocks,
+                          std::uint32_t characterCount);
 void testSeparatorAtPageBottom(typography::Engine& engine);
 
 /// Формулы: MicroTeX с бэкендом Direct2D/DirectWrite. Стек проверяется
@@ -297,6 +300,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     testPagination(engine, blocks, book.characterCount());
     testChunkedPagination(engine, blocks, book.characterCount());
     testEagerPagination(engine, blocks, book.characterCount());
+    testChapterFirstPage(engine, blocks, book.characterCount());
     testScaledShaping(engine, blocks, 620.0f);
 }
 
@@ -729,6 +733,74 @@ void testEagerPagination(typography::Engine& engine, const std::vector<typograph
     std::printf("  энергичный досчёт: %zu страниц из %zu, книга %s\n", second.pageCount(),
                 paginator.pageCount(), more ? "ещё не досчитана" : "досчитана целиком");
 }
+/// Первая колонка главы, свёрстанной своим пагинатором, не должна быть пустой.
+///
+/// Читалка режет книгу на главы верхнего уровня и верстает каждую отдельным
+/// Chapter. На стыке лента показывает первую колонку следующей главы — и если
+/// пагинатор отдаёт её пустой, читатель видит пустую страницу. Тест
+/// воспроизводит стык на настоящей книге: берёт главу из середины и проверяет,
+/// что её страница 0 непуста и начинается ровно с её первого блока.
+void testChapterFirstPage(typography::Engine& engine,
+                          const std::vector<typography::Block>& blocks,
+                          std::uint32_t characterCount) {
+    std::vector<std::size_t> starts;
+    for (std::size_t i = 0; i < blocks.size(); ++i)
+        if (i == 0 || blocks[i].startsSection == 1) starts.push_back(i);
+    if (starts.empty()) {
+        check(true, "нет глав верхнего уровня — пропущено");
+        return;
+    }
+
+    // Полоса — узкая колонка книжного разворота, как у читалки: там стык и виден.
+    typography::PageStyle style;
+    style.width = 300.0f;
+    style.height = 800.0f;
+    style.fontSize = 20.0f;
+
+    // Проходим каждую главу верхнего уровня и ищем ту, у которой первая колонка
+    // выходит пустой: читатель увидел бы её на стыке пустой страницей.
+    std::size_t emptyChapters = 0;
+    std::size_t firstEmpty = starts.size();
+    for (std::size_t c = 0; c < starts.size(); ++c) {
+        const std::size_t first = starts[c];
+        const std::size_t last = c + 1 < starts.size() ? starts[c + 1] : blocks.size();
+
+        const std::span<const typography::Block> span(blocks.data() + first, last - first);
+        typography::Chapter chapter(engine, span, characterCount);
+        chapter.beginLayout(style);
+        chapter.advanceToPage(static_cast<std::size_t>(-1));
+
+        // Глава без страниц — не беда: лента колонок её перешагивает (секция
+        // из одного разделителя). Беда — глава, у которой страницы есть, а
+        // первая пуста: её читатель увидит пустой колонкой на стыке.
+        if (chapter.pageCount() > 0 && chapter.page(0).lines.empty() &&
+            chapter.page(0).images.empty()) {
+            if (firstEmpty == starts.size()) firstEmpty = c;
+            ++emptyChapters;
+        }
+    }
+
+    if (emptyChapters > 0) {
+        // Показываем первую провинившуюся главу с её блоками — по ним видно, чем
+        // она начинается.
+        const std::size_t first = starts[firstEmpty];
+        const std::size_t last =
+            firstEmpty + 1 < starts.size() ? starts[firstEmpty + 1] : blocks.size();
+        std::printf("\n=== пустая первая колонка: глава %zu из %zu (блоки %zu..%zu) ===\n",
+                    firstEmpty, starts.size(), first, last);
+        for (std::size_t i = first; i < last && i < first + 6; ++i) {
+            const typography::Block& b = blocks[i];
+            std::printf("    [%s @%u sect%u lvl%u] %.70s\n", nameOf(b.kind), b.charOffset,
+                        static_cast<unsigned>(b.startsSection), static_cast<unsigned>(b.level),
+                        toUtf8(b.paragraph.text).c_str());
+        }
+    }
+
+    std::printf("  глав верхнего уровня: %zu, с пустой первой колонкой: %zu\n", starts.size(),
+                emptyChapters);
+    check(emptyChapters == 0, "ни одна глава не начинается пустой колонкой");
+}
+
 /// Разделитель, пришедшийся на низ полосы, не должен зацикливать набор.
 ///
 /// Отбивка разделителя занимает место, но страницы не начинает: страница

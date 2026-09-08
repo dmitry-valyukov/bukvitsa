@@ -175,7 +175,7 @@ struct PageBuilder {
     const pool_vector<LaidOutBlock>* source = nullptr;
     PageStyle style;
 
-    pool_vector<Page> pages;
+    pool_deque<Page> pages;
     Page current;
     float used = 0.0f;              ///< сколько полосы занято сверху
     std::uint32_t lastOffset = 0;   ///< позиция последнего поставленного
@@ -531,8 +531,10 @@ struct Chapter::Impl {
 
     void closeBook() {
         book.finish();
-        if (book.pages.empty())
-            book.pages.push_back(Page{});
+        // Пустую страницу не выдумываем: глава без набираемого содержимого —
+        // например, секция верхнего уровня из одного разделителя — остаётся с
+        // нулём страниц, и лента колонок разворота её попросту перешагивает.
+        // Выдуманная пустая страница показалась бы читателю пустой колонкой.
     }
 
 };
@@ -559,7 +561,7 @@ bool Chapter::advance(std::chrono::steady_clock::duration budget) {
 }
 
 bool Chapter::advanceTo(std::uint32_t charOffset) {
-    const pool_vector<Page>& pages = impl_->book.pages;
+    const pool_deque<Page>& pages = impl_->book.pages;
 
     // Страница с этим символом окончательна, только когда набор ушёл за неё:
     // пока она последняя, на ней ещё будет место.
@@ -568,7 +570,7 @@ bool Chapter::advanceTo(std::uint32_t charOffset) {
 }
 
 bool Chapter::advanceToPage(std::size_t index) {
-    const pool_vector<Page>& pages = impl_->book.pages;
+    const pool_deque<Page>& pages = impl_->book.pages;
     return impl_->runUntil([&] { return pages.size() > index; });
 }
 
@@ -591,14 +593,14 @@ const Page& nowhere() {
 }  // namespace
 
 const Page& Chapter::page(std::size_t index) const {
-    const pool_vector<Page>& pages = impl_->book.pages;
+    const pool_deque<Page>& pages = impl_->book.pages;
     if (pages.empty())
         return nowhere();
     return pages[std::min(index, pages.size() - 1)];
 }
 
 std::size_t Chapter::pageForCharOffset(std::uint32_t charOffset) const {
-    const pool_vector<Page>& pages = impl_->book.pages;
+    const pool_deque<Page>& pages = impl_->book.pages;
 
     // Страницы упорядочены по позиции в книге, поэтому — двоичный поиск
     // последней, начинающейся не позже искомого символа.
