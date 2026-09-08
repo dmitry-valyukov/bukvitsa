@@ -197,6 +197,14 @@ private:
     void turnPage(int delta);
     void goTo(std::size_t page);
 
+    /// Переход через границу главы: за концом главы — в начало следующей
+    /// (`crossForward`), за началом — в конец предыдущей (`crossBackward`). У
+    /// края книги не делают ничего. Соседнюю главу верстают целиком — она мала —
+    /// и встают на нужный её разворот: `goToChapterSpread`.
+    void crossForward();
+    void crossBackward();
+    void goToChapterSpread(std::size_t chapter, bool atEnd);
+
     /// Переводит книгу на этот разворот: рисует его на свободный лист и
     /// пускает переворот. Общее тело `goTo` и очередного шага очереди.
     /// @param forward сторона переворота — та же, что и у очереди.

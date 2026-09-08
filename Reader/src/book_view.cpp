@@ -1016,7 +1016,9 @@ void BookView::startDraftTurn() {
     // движение мыши, значило бы считать зря, поэтому грязная вёрстка
     // досчитывается по надобности — и говорит, если досчитывать уже нечего.
     if (!paginator.draftUpTo(columns + 1)) {
-        pending_ = 0;   // книга кончилась
+        // Глава кончилась — уходим в следующую, на её первый разворот.
+        pending_ = 0;
+        crossForward();
         return;
     }
 
@@ -1098,11 +1100,15 @@ void BookView::turnPage(int delta) {
         }
 
         // А назад — нет. Начало предыдущей страницы известно только тому, кто
-        // набрал книгу с начала, поэтому листание назад и есть тот случай,
-        // ради которого чистовой набор всё это время считался.
+        // набрал главу с начала, поэтому листание назад считается по чистовому
+        // набору. За началом главы уходим в конец предыдущей.
         const auto columns = static_cast<std::size_t>(columns_);
         const std::size_t at = catchUpTo(readingPosition_);
-        goTo(at >= columns ? at - columns : 0);
+        if (at < columns) {
+            crossBackward();
+            return;
+        }
+        goTo(at - columns);
         return;
     }
 
@@ -1116,8 +1122,21 @@ void BookView::turnPage(int delta) {
     // идёт, читатель уже попросил следующую страницу, и второе нажатие обязано
     // прибавиться к первому, а не повторить его.
     const auto count = static_cast<std::ptrdiff_t>(pageCount());
-    const auto step = static_cast<std::ptrdiff_t>(delta) * columns_;
-    const auto target = std::clamp(static_cast<std::ptrdiff_t>(queueEnd()) + step,
+    const auto columns = static_cast<std::ptrdiff_t>(columns_);
+    const auto tail = static_cast<std::ptrdiff_t>(queueEnd());
+
+    // За краем главы листание переходит в соседнюю: конец главы — в начало
+    // следующей, начало — в конец предыдущей.
+    if (delta > 0 && tail + columns >= count) {
+        crossForward();
+        return;
+    }
+    if (delta < 0 && tail - columns < 0) {
+        crossBackward();
+        return;
+    }
+
+    const auto target = std::clamp(tail + static_cast<std::ptrdiff_t>(delta) * columns,
                                    static_cast<std::ptrdiff_t>(0), count - 1);
     goTo(static_cast<std::size_t>(target));
 }
@@ -1644,6 +1663,50 @@ void BookView::goToCharOffset(std::uint32_t charOffset) {
     // началом показанной страницы, иначе прогресс и закладка разойдутся с тем,
     // что видит читатель.
     goTo(catchUpTo(charOffset));
+}
+
+void BookView::crossForward() {
+    const std::size_t next = book_->currentChapter() + 1;
+    if (next >= book_->chapterCount()) return;   // последняя глава — дальше некуда
+    goToChapterSpread(next, false);
+}
+
+void BookView::crossBackward() {
+    const std::size_t cur = book_->currentChapter();
+    if (cur == 0) return;   // первая глава — назад некуда
+    goToChapterSpread(cur - 1, true);
+}
+
+void BookView::goToChapterSpread(std::size_t chapter, bool atEnd) {
+    // Переход в соседнюю главу. Наводим на неё пагинатор и верстаем её целиком:
+    // глава мала, это единицы миллисекунд, зато сразу известны и последний
+    // разворот, и общее число страниц. Грязная вёрстка тут не нужна — чистовой
+    // набор одной главы и есть мгновенный.
+    cancelTurn();
+    resetSheets();
+
+    book_->setCurrentChapter(book_->chapterFirstChar(chapter));
+    typography::Paginator& paginator = book_->paginator();
+    paginator.beginLayout(pageStyle_);
+    paginator.advanceToPage(static_cast<std::size_t>(-1));   // до конца главы
+
+    ++paginationEpoch_;   // прежние фоновые порции — от другой главы, они чужие
+    draft_ = false;
+    numberKnown_ = true;
+
+    if (paginator.pageCount() == 0) {
+        redraw();
+        return;
+    }
+
+    std::size_t spread = atEnd ? paginator.pageCount() - 1 : 0;
+    spread -= spread % static_cast<std::size_t>(columns_);
+    page_ = spread;
+    readingPosition_ = paginator.page(page_).firstCharOffset;
+
+    note_.hide();
+    redraw();
+    if (onPositionChanged) onPositionChanged(readingPosition_);
 }
 
 float BookView::columnLeft(std::size_t index) const {
