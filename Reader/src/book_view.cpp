@@ -559,7 +559,6 @@ bool BookView::dismissOverlays() {
 
 void BookView::setActive(bool active) {
     active_ = active;
-    if (sheets_) sheets_.value().isVisible(active);
 
     // Задник окна в чтении — сама страница, один битмап на весь задник: её
     // ставит redraw поверхностью surface_[resting_], и никакой бумаги-подложки
@@ -568,6 +567,11 @@ void BookView::setActive(bool active) {
         updateBackdrop();
         redraw();
     }
+
+    // Листы в покое не нужны: страница видна задником окна. Они выходят на сцену
+    // только на время переворота — показывает их startTurn, прячут обратно
+    // turnCompleted и cancelTurn.
+    if (sheets_) sheets_.value().isVisible(false);
 }
 
 void BookView::setTheme(int index) {
@@ -1009,6 +1013,8 @@ void BookView::startDraftTurn() {
     resting_ = 1 - resting_;
     redraw();
 
+    if (sheets_) sheets_.value().isVisible(true);   // листы — на время переворота
+
     if (columns_ == 2) {
         animateSpreadTurn(true);
     } else {
@@ -1208,6 +1214,10 @@ void BookView::startTurn(std::size_t wanted, bool forward) {
     resting_ = 1 - resting_;
     redraw();
 
+    // Листы выходят на сцену на время переворота — в покое их прячут; страница
+    // при этом уже задником окна (redraw), и уезжающий лист открывает её.
+    if (sheets_) sheets_.value().isVisible(true);
+
     // Книжное листание — только для разворота: снимать бумагу с корешка
     // можно там, где корешок есть. В одну колонку и в три листается тем
     // же, чем листалось всегда.
@@ -1222,7 +1232,10 @@ void BookView::startTurn(std::size_t wanted, bool forward) {
 
 void BookView::turnCompleted() {
     turning_ = false;
-    if (pending_ == 0) return;
+    if (pending_ == 0) {
+        if (sheets_) sheets_.value().isVisible(false);   // очередь пуста — в покой
+        return;
+    }
 
     --pending_;
     if (draft_) {
@@ -1239,6 +1252,9 @@ void BookView::cancelTurn() {
     ++turnEpoch_;
     turning_ = false;
     pending_ = 0;
+    // Переворот отменён — в покой: листы прячем, страница видна задником окна.
+    // Начнётся следом встречный переворот — startTurn снова их покажет.
+    if (sheets_) sheets_.value().isVisible(false);
 }
 
 void BookView::raise(const SpriteVisual& sheet) {
