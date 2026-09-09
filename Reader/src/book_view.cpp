@@ -1432,23 +1432,21 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // поверхность за ней та же — второй отрисовки не возникает.
     coming.brush(backdrop_->brush());
 
-    // Новые листы — ПОД старыми: группу этого листа целиком опускаем на низ
-    // контейнера, под уже летящие. Так старые (те, что дальше в перевороте и
-    // потому уже, ближе к корешку) остаются сверху, а новые (шире) видны из-под
-    // них веером к краю. Клали бы новый наверх — он во всю ширину перекрыл бы
-    // старые целиком, и переворотов было бы не разглядеть. Внутри группы четыре
-    // слоя снизу вверх: тень сгиба, снимаемая бумага, тень наружного края
-    // (лежит на снимаемой бумаге), сам лист; insertAtBottom в обратном порядке
-    // и даёт эту стопку, и всю её под старыми.
+    // Новые листы — над старыми: последний подхваченный лист самый верхний, как
+    // в настоящей книге — он ближе всех к глазу. Группу этого листа целиком
+    // поднимаем на верх контейнера, над уже летящими. Друг друга по развороту
+    // они не затирают, потому что каждый несёт лишь свою перелистываемую
+    // страницу (см. крой ниже), а не весь разворот. Внутри группы снизу вверх:
+    // тень сгиба, снимаемая бумага, тень наружного края, приходящий лист.
     VisualCollection const children = sheets_.value().children();
-    children.remove(coming);
-    children.insertAtBottom(coming);
-    children.remove(rim);
-    children.insertAtBottom(rim);
-    children.remove(going);
-    children.insertAtBottom(going);
     children.remove(fold);
-    children.insertAtBottom(fold);
+    children.insertAtTop(fold);
+    children.remove(going);
+    children.insertAtTop(going);
+    children.remove(rim);
+    children.insertAtTop(rim);
+    children.remove(coming);
+    children.insertAtTop(coming);
 
     const float leftPage = spine();
     const float rightPage = width_ - leftPage;
@@ -1457,6 +1455,15 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // левая.
     const float travel = forward ? rightPage : leftPage;
     const wchar_t* const inset = forward ? L"RightInset" : L"LeftInset";
+
+    // Лист несёт только перелистываемую страницу: вперёд — правую (левую половину
+    // разворота отрезаем к корешку неподвижным отступом), назад — левую. Иначе
+    // неперелистываемая половина каждого листа затирала бы соседние листы при
+    // быстром листании внахлёст; за неё отвечает задник с самым новым разворотом.
+    if (forward)
+        goingCrop.leftInset(leftPage);
+    else
+        goingCrop.rightInset(rightPage);
 
     // Пологая S-кривая: рука, тянущая бумагу, слегка разгоняется в начале и
     // тормозит к корешку — не роняет тяжесть, но и не тянет мёртво-равномерно
