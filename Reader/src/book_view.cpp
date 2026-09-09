@@ -152,6 +152,14 @@ constexpr std::size_t kMaxFlips = 16;
 constexpr auto kFlipReleaseFirst = 10s;
 constexpr auto kFlipReleaseStep = 1s;
 
+/// Закон листания — пологая S-кривая (кубическая безье): небольшой разгон в
+/// начале и торможение в конце, чтобы движение читалось живым, а не
+/// равномерным. Контрольные точки симметричны относительно середины разворота;
+/// концы мягкие, но скорость на них не гаснет в ноль — оттого «небольшой», а не
+/// полная остановка на краях. Правится этими четырьмя числами.
+constexpr float kEaseX1 = 0.30f, kEaseY1 = 0.10f;
+constexpr float kEaseX2 = 0.70f, kEaseY2 = 0.90f;
+
 /// Насколько широко тень расходится к концу переворота — в долях страницы, а
 /// не в точках. Тень меряется окном: на широком экране полсотни точек
 /// теряются, на узком закрывают текст. Целая страница в конце означает ровно
@@ -1371,7 +1379,8 @@ void BookView::animateTurn(Flip& flip, bool forward) {
     const float to = forward ? -reach : reach;
     const float angleTo = forward ? -kTurnAngle : kTurnAngle;
 
-    auto const easing = compositor_.createLinearEasingFunction();
+    auto const easing =
+        compositor_.createCubicBezierEasingFunction({kEaseX1, kEaseY1}, {kEaseX2, kEaseY2});
 
     auto slide = compositor_.createVector3KeyFrameAnimation();
     slide.duration(kTurn);
@@ -1449,8 +1458,11 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     const float travel = forward ? rightPage : leftPage;
     const wchar_t* const inset = forward ? L"RightInset" : L"LeftInset";
 
-    // Ровно, без разгона: бумагу тянет рука, а не роняет тяжесть.
-    auto const easing = compositor_.createLinearEasingFunction();
+    // Пологая S-кривая: рука, тянущая бумагу, слегка разгоняется в начале и
+    // тормозит к корешку — не роняет тяжесть, но и не тянет мёртво-равномерно
+    // (kEase*).
+    auto const easing =
+        compositor_.createCubicBezierEasingFunction({kEaseX1, kEaseY1}, {kEaseX2, kEaseY2});
 
     auto crawl = compositor_.createScalarKeyFrameAnimation();
     crawl.duration(kLeafSlide);
