@@ -144,6 +144,13 @@ constexpr auto kLeafSlide = 500ms;
 /// поэтому число хоть и щедрое, но не бесконечное.
 constexpr std::size_t kMaxFlips = 16;
 
+/// Отпускание пула листов в простое. Первый лист роняем через долгую паузу —
+/// вдруг читатель тут же листнёт снова и пул понадобится сразу; дальше по
+/// одному в секунду, пока пул не опустеет. Так пик памяти держится лишь на
+/// время листания, а в покое поверхности листов освобождаются.
+constexpr auto kFlipReleaseFirst = 10s;
+constexpr auto kFlipReleaseStep = 1s;
+
 /// Насколько широко тень расходится к концу переворота — в долях страницы, а
 /// не в точках. Тень меряется окном: на широком экране полсотни точек
 /// теряются, на узком закрывают текст. Целая страница в конце означает ровно
@@ -239,10 +246,17 @@ BookView::BookView(CompositionWindow& window)
     : window_(&window),
       compositor_(window.compositor()),
       queue_(window.dispatcherQueue()),
+      releaseTimer_(window.dispatcherQueue().createTimer()),
       // Всплывашка сноски — XAML-остров, её рисунок висит в дереве острова, а не
       // на сцене: ей нужен композитор острова, а не окна.
       note_(window.chromeCompositor()) {
     root_ = buildTree();
+
+    // Таймер отпускания пула листов не повторяется — перезаводится сам с новой
+    // паузой (armRelease/onReleaseTick).
+    releaseTimer_.isRepeating(false);
+    releaseTimer_.add_onTick(
+        [this](wxl::Object const&, wxl::Object const&) { onReleaseTick(); });
 
     IDWriteFactory* const dwrite = dwriteFactory();
     if (!dwrite) return;
@@ -1103,6 +1117,8 @@ void BookView::startTurn(const Column& target, bool forward) {
 }
 
 BookView::Flip& BookView::acquireFlip() {
+    releaseTimer_.stop();   // снова листают — отпускание пула отменяется
+
     // Свободный лист в пуле?
     for (Flip& f : flips_)
         if (!f.active) {
@@ -1257,6 +1273,7 @@ void BookView::settleSheets() {
     for (Flip& f : flips_)
         if (f.active) return;
     if (sheets_) sheets_.value().isVisible(false);
+    armRelease();   // все листы свободны — отпускать пул по таймеру
 }
 
 void BookView::cancelTurn() {
@@ -1269,6 +1286,42 @@ void BookView::cancelTurn() {
             finishFlip(f);
         }
     if (sheets_) sheets_.value().isVisible(false);
+    armRelease();   // пул свободен — отпускать по таймеру
+}
+
+void BookView::armRelease() {
+    if (flips_.empty()) return;
+    releaseTimer_.stop();
+    releaseTimer_.interval(kFlipReleaseFirst);
+    releaseTimer_.start();
+}
+
+void BookView::onReleaseTick() {
+    releaseTimer_.stop();
+
+    // Снова листают — пул нужен, ничего не трогаем. acquireFlip таймер уже
+    // остановил, но тик мог уйти в очередь раньше остановки.
+    for (const Flip& f : flips_)
+        if (f.active) return;
+
+    // Отпускаем один лист: снимаем его визуалы со сцены и роняем — с ним уходит
+    // и его поверхность в размер окна. Берём последний: все свободны, порядок
+    // не важен, а pop_back остальных не двигает.
+    if (!flips_.empty()) {
+        Flip& f = flips_.back();
+        VisualCollection const children = sheets_.value().children();
+        children.remove(f.sheet);
+        children.remove(f.fold);
+        children.remove(f.edge);
+        children.remove(f.leaf);   // полутон изгиба — ребёнок листа, уходит с ним
+        flips_.pop_back();
+    }
+
+    // Ещё остались — следующий через секунду.
+    if (!flips_.empty()) {
+        releaseTimer_.interval(kFlipReleaseStep);
+        releaseTimer_.start();
+    }
 }
 
 void BookView::applyShadowTint() {
