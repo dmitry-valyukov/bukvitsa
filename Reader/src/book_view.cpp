@@ -137,6 +137,12 @@ constexpr float kShadowReach = kShadowShift + kShadowBlur;
 /// глазом и по кадрам. Вернуть перед тем, как читать книгу.
 constexpr auto kLeafSlide = 500ms;
 
+/// Сколько листов переворота держим в воздухе разом. При быстром листании
+/// каждый нажим пускает свой лист, и они летят внахлёст; больше этого числа не
+/// копим — самый старый добивается рывком. Каждый лист — поверхность в размер
+/// окна, то есть память, поэтому число небольшое.
+constexpr std::size_t kMaxFlips = 4;
+
 /// Насколько широко тень расходится к концу переворота — в долях страницы, а
 /// не в точках. Тень меряется окном: на широком экране полсотни точек
 /// теряются, на узком закрывают текст. Целая страница в конце означает ровно
@@ -258,99 +264,24 @@ Grid BookView::buildTree() {
     // перекрыли бы одноимённые переменные во всём остальном коде.
     using namespace wxl::dsl;
 
-    // Два листа под общим контейнером. Клип контейнера — то, что не даёт
-    // повёрнутому листу вылезти за полосу: клип живёт в координатах самого
+    // Контейнер листов переворотов — над задником окна. Клип контейнера не
+    // даёт повёрнутому листу вылезти за полосу: клип живёт в координатах самого
     // визуала и применяется до его преобразования, поэтому повёрнутый лист
-    // обрезается по прямоугольнику страницы, а не по описанному вокруг него.
+    // режется по прямоугольнику страницы, а не по описанному вокруг него. Сами
+    // листы заводятся по требованию (makeFlip) — при быстром листании их в
+    // воздухе несколько разом.
     sheets_ = compositor_.createContainerVisual();
     sheets_.value().clip(compositor_.createInsetClip());
 
-    for (int index = 0; index < 2; ++index) {
-        SpriteVisual sheet = compositor_.createSpriteVisual();
+    // Пул листов зарезервирован под предел: дальше push_back не переселяет
+    // вектор, и указатели на листы, что держат обработчики конца переворота,
+    // остаются годными.
+    flips_.reserve(kMaxFlips);
 
-        // Крой заводится сразу, а не в начале переворота: заводить его там
-        // было бы то же самое, только каждый раз заново. В покое он ничего не
-        // режет — отступы отрицательные, и окно шире листа ровно на вылет
-        // тени, которую иначе срезало бы вместе с ней.
-        InsetClip crop = compositor_.createInsetClip(-kShadowReach, -kShadowReach, -kShadowReach,
-                                                     -kShadowReach);
-        sheet.clip(crop);
-
-        sheets_.value().children().insertAtTop(sheet);
-        sheet_.push_back(sheet);
-        clip_.push_back(crop);
-    }
-
-    // Тень поднятой бумаги. Кисть у неё горизонтальная и в долях собственной
-    // ширины (MappingMode по умолчанию относительный), поэтому полоске
-    // достаточно ездить — перекрашивать её не приходится.
-    CompositionLinearGradientBrush foldBrush = compositor_.createLinearGradientBrush();
-    foldBrush.startPoint({0.0f, 0.0f});
-    foldBrush.endPoint({1.0f, 0.0f});
-    CompositionColorGradientStop foldMid =
-        compositor_.createColorGradientStop(kFoldMidStop, colors.transparent);
-    foldBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    foldBrush.colorStops().append(foldMid);
-    foldBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-    foldMid_ = foldMid;
-
-    SpriteVisual fold = compositor_.createSpriteVisual();
-    fold.brush(foldBrush);
-    fold.isVisible(false);
-    sheets_.value().children().insertAtTop(fold);
-
-    foldBrush_ = foldBrush;
-    fold_ = fold;
-
-    // Тень наружного края приходящего листа. Отдельная от предыдущей: у той
-    // край поднят и тень широкая, растущая, а этот край лежит на бумаге, и
-    // тень у него узкая и неизменная. Градиент развёрнут — густо у листа,
-    // прозрачно прочь от него.
-    CompositionLinearGradientBrush edgeBrush = compositor_.createLinearGradientBrush();
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(kEdgeMidStop, colors.transparent));
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-
-    SpriteVisual edge = compositor_.createSpriteVisual();
-    edge.brush(edgeBrush);
-    edge.isVisible(false);
-    sheets_.value().children().insertAtTop(edge);
-
-    edgeBrush_ = edgeBrush;
-    edge_ = edge;
-
-    // Приходящий лист. Кисть ему выдаётся на каждый переворот — ту же, что
-    // носит лежащий внизу разворот, — а крой у него свой: им он и выезжает.
-    SpriteVisual leaf = compositor_.createSpriteVisual();
-    InsetClip leafCrop = compositor_.createInsetClip();
-    leaf.clip(leafCrop);
-    leaf.isVisible(false);
-    sheets_.value().children().insertAtTop(leaf);
-
-    // Полутон изгиба — ребёнок листа, а не сосед: он затеняет саму бумагу и
-    // обязан кроиться вместе с ней. Дети рисуются поверх кисти визуала, так
-    // что ложится он именно на страницу.
-    CompositionLinearGradientBrush bendBrush = compositor_.createLinearGradientBrush();
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(kBendMidStop, colors.transparent));
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-
-    SpriteVisual bend = compositor_.createSpriteVisual();
-    bend.brush(bendBrush);
-    leaf.children().insertAtTop(bend);
-
-    bendBrush_ = bendBrush;
-    bend_ = bend;
-
-    leaf_ = leaf;
-    leafCrop_ = leafCrop;
-
-    applyShadowTint();
-
-    // Страница — на сцене окна: её визуалы висят на композиторе окна и привешены
-    // к contentVisual() (над задником, под островом), а не всунуты в дерево XAML
-    // через setElementChildVisual. Пока полоса не стала текущим экраном, её сцена
-    // скрыта — setActive(true) покажет её при входе в чтение.
+    // Страница — задник окна (его рисует redraw); листы переворотов — на сцене
+    // окна над ним, привешены к contentVisual() (над задником, под островом), а
+    // не всунуты в дерево XAML через setElementChildVisual. Пока полоса не стала
+    // текущим экраном, её сцена скрыта — setActive(true) покажет при входе.
     window_->contentVisual().children().insertAtTop(sheets_.value());
     sheets_.value().isVisible(false);
 
@@ -561,8 +492,8 @@ void BookView::setActive(bool active) {
     active_ = active;
 
     // Задник окна в чтении — сама страница, один битмап на весь задник: её
-    // ставит redraw поверхностью surface_[resting_], и никакой бумаги-подложки
-    // под ней нет. Уходя, задник вернёт себе стартовый экран (заставку).
+    // ставит redraw поверхностью backdrop_, и никакой бумаги-подложки под ней
+    // нет. Уходя, задник вернёт себе стартовый экран (заставку).
     if (active && window_) {
         updateBackdrop();
         redraw();
@@ -570,7 +501,7 @@ void BookView::setActive(bool active) {
 
     // Листы в покое не нужны: страница видна задником окна. Они выходят на сцену
     // только на время переворота — показывает их startTurn, прячут обратно
-    // turnCompleted и cancelTurn.
+    // finishFlip и cancelTurn.
     if (sheets_) sheets_.value().isVisible(false);
 }
 
@@ -692,7 +623,7 @@ bool BookView::resizeSurface() {
 }
 
 bool BookView::applySize(float width, float height, float scale) {
-    if (width == width_ && height == height_ && scale == scale_ && !surface_.empty()) return false;
+    if (width == width_ && height == height_ && scale == scale_ && backdrop_) return false;
 
     width_ = width;
     height_ = height;
@@ -702,59 +633,34 @@ bool BookView::applySize(float width, float height, float scale) {
                            static_cast<int32_t>(height * scale + 0.5f)};
     if (pixels.width <= 0 || pixels.height <= 0) return false;
 
-    // Поверхности меняют размер, а не пересоздаются: кисти, которые их уже
-    // показывают, продолжают показывать их же.
-    if (surface_.empty()) {
-        for (std::size_t index = 0; index < sheet_.size(); ++index) {
-            surface_.emplace_back(compositor_, pixels);
-            sheet_[index].brush(surface_[index].brush());
+    // Задник и поверхности листов меняют размер, а не пересоздаются: кисти,
+    // которые их уже показывают (фон окна, листы), продолжают показывать их же.
+    if (!backdrop_)
+        backdrop_.emplace(compositor_, pixels);
+    else
+        backdrop_->resize(pixels);
 
-            // Тень листа — здесь, а не в начале переворота: маской ей служит
-            // кисть листа, а кисть появляется ровно тут. Дальше она только
-            // гаснет и зажигается.
-            DropShadow shadow = compositor_.createDropShadow();
-            shadow.blurRadius(kShadowBlur);
-            shadow.offset({kShadowShift, 0.0f, 0.0f});
-            shadow.mask(sheet_[index].brush());
-            shadow.opacity(0.0f);
-            sheet_[index].shadow(shadow);
-            shadow_.push_back(shadow);
-        }
-    } else {
-        for (DrawingSurface& sheet : surface_) sheet.resize(pixels);
-    }
-
-    for (SpriteVisual const& sheet : sheet_) {
-        sheet.size({width, height});
-        // Поворот идёт вокруг левого края: там у книги корешок, и лист
-        // поднимается именно оттуда.
-        sheet.centerPoint({0.0f, height * 0.5f, 0.0f});
+    // Листы пула — под новый размер: их поверхности и все зависящие от ширины
+    // визуалы. Новые заведутся уже в этом размере (makeFlip).
+    for (Flip& flip : flips_) {
+        flip.surface->resize(pixels);
+        flip.sheet.size({width, height});
+        // Поворот идёт вокруг левого края: там корешок, оттуда лист и поднимается.
+        flip.sheet.centerPoint({0.0f, height * 0.5f, 0.0f});
+        // Полоска тени сгиба меряется целым разворотом (её ужимает Scale по
+        // ходу), приходящий лист — тоже; тени края и полутон изгиба — постоянной
+        // ширины в долях окна.
+        flip.fold.size({width, height});
+        flip.leaf.size({width, height});
+        flip.edge.size({width * kEdgeOfWindow, height});
+        flip.bend.size({width * kBendOfWindow, height});
     }
     sheets_.value().size({width, height});
 
-    // Полоска тени меряется целым разворотом, а до нужной доли её ужимает
-    // Scale: ширина тени зависит от корешка, а корешок при этом вызове ещё
-    // может быть не посчитан.
-    fold_.value().size({width, height});
-
-    // А этой ужимать нечего: ширина у неё постоянная, и посчитать её можно
-    // прямо здесь.
-    edge_.value().size({width * kEdgeOfWindow, height});
-    bend_.value().size({width * kBendOfWindow, height});
-
-    // Приходящий лист меряется целым разворотом, как и обычные листы: он
-    // носит их кисть, и страница на ней лежит в тех же координатах.
-    leaf_.value().size({width, height});
-
-    applyShadowTint();   // у теней, заведённых выше, цвет ещё не темы
-
-    // Окно кроя задано в тех же единицах, что и полоса, и после смены её
-    // размера бессмысленно. Оставить его недосброшенным — значит спрятать
-    // кусок настоящей страницы, если размер сменился посреди переворота.
-    // Вместе с ним отменяется и очередь: доигрывать её по новым размерам
-    // означало бы листать вслепую.
+    // Окна кроя листов заданы в прежних числах и после смены размера
+    // бессмысленны — все идущие перевороты в покой: доигрывать их по новым
+    // размерам значило бы листать вслепую.
     cancelTurn();
-    resetSheets();
     return true;
 }
 
@@ -848,11 +754,10 @@ void BookView::relayoutNow() {
     ++paginationEpoch_;
 
     // Перевёрстка меняет и корешок, и ширину страницы, а листы могли остаться
-    // от прерванного переворота с окном кроя, посчитанным по прежним числам.
-    // Очередь листания к прежним числам привязана не меньше: и номер разворота
-    // в ней, и число колонок, которым он считается, после перевёрстки другие.
+    // от прерванных переворотов с окнами кроя, посчитанными по прежним числам.
+    // Все идущие перевороты — в покой: доигрывать их по новым размерам значило
+    // бы листать вслепую.
     cancelTurn();
-    resetSheets();
 
     if (!book_ || width_ <= 0.0f || height_ <= 0.0f) {
         redraw();
@@ -1109,13 +1014,21 @@ void BookView::showColumn(const Column& target) {
 }
 
 void BookView::redraw() {
-    if (surface_.empty() || width_ <= 0.0f || height_ <= 0.0f) return;
+    if (!backdrop_ || width_ <= 0.0f || height_ <= 0.0f) return;
 
     // Собираем показанный разворот из ленты колонок до отрисовки: дальше и
     // рисование, и попадание по сноске читают уже готовый spread_.
     buildSpread();
+    drawSpread(*backdrop_);
 
-    surface_[resting_].draw([this](ID2D1DeviceContext* context) {
+    // Страница — задник окна: один битмап на весь задник, кроет его синхронно,
+    // как заставка. В чтении (active_) ставим поверхность задником; на стартовом
+    // экране задником владеет заставка.
+    if (active_ && window_) window_->background(*backdrop_);
+}
+
+void BookView::drawSpread(DrawingSurface& surface) {
+    surface.draw([this](ID2D1DeviceContext* context) {
         // Поверхность в пикселях, а вёрстка в DIP: масштаб домножается к тому
         // смещению атласа, которое wxl уже поставила, — иначе поверхность
         // легла бы поверх чужой.
@@ -1137,11 +1050,6 @@ void BookView::redraw() {
             drawInvitation(context, width_, height_);
         }
     });
-
-    // Страница — задник окна: один битмап на весь задник, кроет его синхронно,
-    // как заставка. В чтении (active_) ставим поверхность задником; на стартовом
-    // экране задником владеет заставка.
-    if (active_ && window_) window_->background(surface_[resting_]);
 }
 
 void BookView::turnPage(int delta) {
@@ -1149,108 +1057,217 @@ void BookView::turnPage(int delta) {
         return;
     const bool forward = delta > 0;
 
-    // Встречное листание отменяет очередь: показывать дорогу туда, откуда
-    // читатель уже повернул назад, незачем. Тогда шаг считается от видимого
-    // разворота, а не от конца прежней очереди.
-    if (turning_ && forward != turnForward_)
-        cancelTurn();
-
-    // Конец очереди — колонка, до которой дойдёт последний заказанный переворот.
-    // От неё и считается следующий разворот ленты. Лента непрерывна, так что
-    // это обычный шаг: границу главы он проходит сам, не прыжком.
-    Column target = queueEnd();
+    // Следующий разворот ленты от нынешнего места. Лента непрерывна, так что
+    // это обычный шаг: границу главы он проходит сам, не прыжком. Место чтения
+    // и задник двигаются сразу, а лист уходящего разворота летит вдогонку —
+    // поэтому быстрые нажатия пускают несколько листов внахлёст, а не ждут в
+    // очереди.
+    Column target = anchorColumn();
     if (!ribbonSpread(target, forward))
         return;   // край книги — листать некуда
 
-    // Тот же ход направления при идущем перевороте — в очередь; иначе новый.
-    // Плоское листание turning_ не держит, там всегда startTurn.
-    if (turning_) {
-        ++pending_;
-        return;
-    }
     startTurn(target, forward);
-}
-
-BookView::Column BookView::queueEnd() {
-    Column pos = anchorColumn();
-    // Каждый заказанный, но ещё не начатый переворот сдвигает конец очереди на
-    // разворот в сторону turnForward_. В очередь попадает только тот шаг, что в
-    // книге есть (см. turnPage), поэтому все они проходят.
-    for (int i = 0; i < pending_; ++i)
-        ribbonSpread(pos, turnForward_);
-    return pos;
 }
 
 void BookView::startTurn(const Column& target, bool forward) {
     note_.hide();   // страница ушла, а сноска на ней осталась бы висеть
 
-    // Целевая колонка может лежать в соседней главе — делаем её текущей, не
-    // теряя вёрстки: buildSpread уже разложил её как соседнюю на стыке.
+    // Захватываем уходящий разворот на отдельный лист: рисуем то, что сейчас на
+    // заднике (spread_ собран под нынешний якорь), в поверхность листа. Лист
+    // возьмётся свободный, новый или добитый — см. acquireFlip.
+    Flip& flip = acquireFlip();
+    flip.forward = forward;
+    flip.epoch = flip.started = ++flipClock_;
+    drawSpread(*flip.surface);
+
+    // Двигаем книгу на целевой разворот и рисуем его задником — самым новым.
+    // Целевая колонка может лежать в соседней главе: делаем её текущей, не теряя
+    // вёрстки (buildSpread разложил её как соседнюю на стыке).
     if (target.chapter != book_->currentChapter())
         book_->makeCurrentChapter(target.chapter);
     page_ = target.index;
     readingPosition_ = book_->paginator().page(page_).firstCharOffset;
-
-    // Новая страница рисуется на свободный лист, и он становится тем, на
-    // котором книга стоит. Порядок именно такой: к началу анимации верная
-    // страница уже нарисована и уже лежит внизу, поэтому сбой анимации может
-    // стоить кадра, но не страницы. Отсюда же и то, почему очередь не забегает
-    // вперёд: свободный лист один, и пока по нему едет кромка, рисовать
-    // следующий разворот некуда, — потому очередь и хранится числом шагов.
-    resting_ = 1 - resting_;
     redraw();
 
-    // Листы выходят на сцену на время переворота — в покое их прячут; страница
-    // при этом уже задником окна (redraw), и уезжающий лист открывает её.
-    if (sheets_) sheets_.value().isVisible(true);
+    if (sheets_) sheets_.value().isVisible(true);   // листы — на время переворота
 
-    // Книжное листание — только для разворота: снимать бумагу с корешка можно
-    // там, где корешок есть. В одну колонку и в три листается тем же, чем
-    // листалось всегда, и очереди там нет — новая анимация перебивает старую.
-    if (columns_ == 2) {
-        animateSpreadTurn(forward);
-    } else {
-        animateTurn(forward);
-    }
+    // Книжное листание — только для разворота (две колонки): там есть корешок.
+    // В одну колонку и в три — плоское.
+    if (columns_ == 2)
+        animateSpreadTurn(flip, forward);
+    else
+        animateTurn(flip, forward);
 
     if (onPositionChanged) onPositionChanged(readingPosition_);
 }
 
-void BookView::turnCompleted() {
-    turning_ = false;
-    if (pending_ == 0) {
-        if (sheets_) sheets_.value().isVisible(false);   // очередь пуста — в покой
-        return;
+BookView::Flip& BookView::acquireFlip() {
+    // Свободный лист в пуле?
+    for (Flip& f : flips_)
+        if (!f.active) {
+            f.active = true;
+            return f;
+        }
+
+    // Ещё не набрали лимит — заводим новый. Пул зарезервирован под kMaxFlips
+    // (buildTree), так что push_back не переселяет вектор: указатели на листы,
+    // что держат обработчики конца, остаются годными.
+    if (flips_.size() < kMaxFlips) {
+        flips_.push_back(makeFlip());
+        Flip& fresh = flips_.back();
+        fresh.active = true;
+        applyShadowTint();   // покрасить его тени под нынешнюю тему
+        return fresh;
     }
 
-    --pending_;
-    Column next = anchorColumn();
-    if (!ribbonSpread(next, turnForward_)) {   // упёрлись в край — очередь оборвана
-        pending_ = 0;
-        if (sheets_) sheets_.value().isVisible(false);
-        return;
-    }
-    startTurn(next, turnForward_);
+    // Все в воздухе, а листать просят ещё — добиваем самый старый рывком.
+    Flip* oldest = &flips_.front();
+    for (Flip& f : flips_)
+        if (f.started < oldest->started)
+            oldest = &f;
+    oldest->epoch = ++flipClock_;   // его обработчик конца, придя, увидит чужой номер
+    finishFlip(*oldest);
+    oldest->active = true;
+    return *oldest;
 }
 
-void BookView::cancelTurn() {
-    // Номер меняется — и обработчик конца, если пакет отменённого переворота
-    // всё-таки о нём скажет, узнает свой номер чужим и промолчит.
-    ++turnEpoch_;
-    turning_ = false;
-    pending_ = 0;
-    // Переворот отменён — в покой: листы прячем, страница видна задником окна.
-    // Начнётся следом встречный переворот — startTurn снова их покажет.
+BookView::Flip BookView::makeFlip() {
+    using namespace wxl::dsl;   // colors.transparent — как в buildTree
+
+    const SizeInt32 pixels{static_cast<int32_t>(width_ * scale_ + 0.5f),
+                           static_cast<int32_t>(height_ * scale_ + 0.5f)};
+    DrawingSurface surface(compositor_, pixels);
+
+    SpriteVisual sheet = compositor_.createSpriteVisual();
+    sheet.brush(surface.brush());
+    sheet.size({width_, height_});
+    // Поворот идёт вокруг левого края: там корешок, оттуда лист и поднимается.
+    sheet.centerPoint({0.0f, height_ * 0.5f, 0.0f});
+    // Крой в покое отпущен на вылет тени: нулевые отступы — ровно лист, а тени
+    // положено лежать за его краем.
+    InsetClip clip = compositor_.createInsetClip(-kShadowReach, -kShadowReach, -kShadowReach,
+                                                 -kShadowReach);
+    sheet.clip(clip);
+    sheet.isVisible(false);
+
+    // Тень уезжающего листа — маской ей кисть листа, поэтому тень повторяет
+    // лист, а не описанный прямоугольник. Гасится и зажигается прозрачностью.
+    DropShadow shadow = compositor_.createDropShadow();
+    shadow.blurRadius(kShadowBlur);
+    shadow.offset({kShadowShift, 0.0f, 0.0f});
+    shadow.mask(sheet.brush());
+    shadow.opacity(0.0f);
+    sheet.shadow(shadow);
+
+    // Тень сгиба (книжное листание): горизонтальный градиент в долях своей
+    // ширины, поэтому полоске достаточно ездить — перекрашивать не приходится.
+    CompositionLinearGradientBrush foldBrush = compositor_.createLinearGradientBrush();
+    foldBrush.startPoint({0.0f, 0.0f});
+    foldBrush.endPoint({1.0f, 0.0f});
+    CompositionColorGradientStop foldMid =
+        compositor_.createColorGradientStop(kFoldMidStop, colors.transparent);
+    foldBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
+    foldBrush.colorStops().append(foldMid);
+    foldBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    SpriteVisual fold = compositor_.createSpriteVisual();
+    fold.brush(foldBrush);
+    fold.size({width_, height_});
+    fold.isVisible(false);
+
+    // Тень наружного края приходящего листа: узкая и неизменная, градиент
+    // развёрнут — густо у листа, прозрачно прочь.
+    CompositionLinearGradientBrush edgeBrush = compositor_.createLinearGradientBrush();
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(kEdgeMidStop, colors.transparent));
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    SpriteVisual edge = compositor_.createSpriteVisual();
+    edge.brush(edgeBrush);
+    edge.size({width_ * kEdgeOfWindow, height_});
+    edge.isVisible(false);
+
+    // Приходящий лист (кисть выдаётся на каждый переворот — задника) и полутон
+    // изгиба у сгиба: ребёнок листа, кроится вместе с ним.
+    SpriteVisual leaf = compositor_.createSpriteVisual();
+    InsetClip leafClip = compositor_.createInsetClip();
+    leaf.clip(leafClip);
+    leaf.size({width_, height_});
+    leaf.isVisible(false);
+    CompositionLinearGradientBrush bendBrush = compositor_.createLinearGradientBrush();
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(kBendMidStop, colors.transparent));
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    SpriteVisual bend = compositor_.createSpriteVisual();
+    bend.brush(bendBrush);
+    bend.size({width_ * kBendOfWindow, height_});
+    leaf.children().insertAtTop(bend);
+
+    // Все листовые визуалы — в контейнер; их Z на каждый переворот уточняет
+    // анимация (плоское — под старые, книжное — над старыми).
+    VisualCollection const children = sheets_.value().children();
+    children.insertAtTop(sheet);
+    children.insertAtTop(fold);
+    children.insertAtTop(edge);
+    children.insertAtTop(leaf);
+
+    return Flip{std::move(surface), sheet, clip,     shadow,  leaf, leafClip, bend,
+                bendBrush,          fold,  foldBrush, foldMid, edge, edgeBrush};
+}
+
+void BookView::finishFlip(Flip& flip) {
+    // Сначала снять анимации, потом писать: пока анимация на свойстве жива,
+    // прямая запись до него не доходит, и недоехавший лист доехал бы позже уже
+    // не к месту.
+    flip.sheet.stopAnimation(L"Offset");
+    flip.sheet.stopAnimation(L"RotationAngleInDegrees");
+    flip.sheet.offset({0.0f, 0.0f, 0.0f});
+    flip.sheet.rotationAngleInDegrees(0.0f);
+    flip.sheet.isVisible(false);
+
+    flip.clip.stopAnimation(L"LeftInset");
+    flip.clip.stopAnimation(L"RightInset");
+    flip.clip.leftInset(-kShadowReach);
+    flip.clip.rightInset(-kShadowReach);
+    flip.clip.topInset(-kShadowReach);
+    flip.clip.bottomInset(-kShadowReach);
+
+    flip.shadow.opacity(0.0f);
+
+    flip.fold.stopAnimation(L"Offset");
+    flip.fold.stopAnimation(L"Scale");
+    flip.fold.stopAnimation(L"Opacity");
+    flip.fold.isVisible(false);
+    flip.foldMid.stopAnimation(L"Offset");
+
+    flip.edge.stopAnimation(L"Offset");
+    flip.edge.isVisible(false);
+
+    flip.leaf.stopAnimation(L"Offset");
+    flip.leaf.isVisible(false);
+    flip.bend.stopAnimation(L"Offset");
+    flip.bend.stopAnimation(L"Opacity");
+    flip.bend.opacity(1.0f);
+    flip.leafClip.stopAnimation(L"LeftInset");
+    flip.leafClip.stopAnimation(L"RightInset");
+
+    flip.active = false;
+}
+
+void BookView::settleSheets() {
+    for (Flip& f : flips_)
+        if (f.active) return;
     if (sheets_) sheets_.value().isVisible(false);
 }
 
-void BookView::raise(const SpriteVisual& sheet) {
-    // Сначала вынуть, потом положить наверх. Композитор не переставляет визуал,
-    // у которого уже есть родитель, — он отвечает на это E_INVALIDARG, а
-    // исключение из обработчика XAML стоит приложению жизни. Оба листа лежат
-    // в контейнере с самого начала, так что «уже есть» — это всегда.
-    sheets_.value().children().remove(sheet);
-    sheets_.value().children().insertAtTop(sheet);
+void BookView::cancelTurn() {
+    // Все идущие перевороты — в покой. Пакеты их концов ещё придут, но каждому
+    // листу здесь меняется epoch, и обработчик, придя, увидит чужой номер и
+    // промолчит: остановленная анимация закрывает пакет так же, как доигравшая.
+    for (Flip& f : flips_)
+        if (f.active) {
+            f.epoch = ++flipClock_;
+            finishFlip(f);
+        }
+    if (sheets_) sheets_.value().isVisible(false);
 }
 
 void BookView::applyShadowTint() {
@@ -1268,156 +1285,99 @@ void BookView::applyShadowTint() {
         stops[2].color(tinted(hue, 0.0f));
     };
 
-    paint(foldBrush_.value().colorStops(), kFoldNear, kFoldMid);
-    paint(edgeBrush_.value().colorStops(), kEdgeNear, kEdgeMid);
-    paint(bendBrush_.value().colorStops(), kBendNear, kBendMid);
-
-    // Тень обычного переворота — не градиент, а размытие, и цвет у неё свой
-    // собственный. Прозрачностью там правит сама тень, поэтому тон берётся
-    // непрозрачным.
-    for (DropShadow const& shadow : shadow_) shadow.color(tinted(hue, 1.0f));
-}
-
-void BookView::resetSheets() {
-    // Сперва всё — на место, и только потом двигается одно.
-    //
-    // Лист, уехавший в прошлый переворот, там и остаётся: смещение с поворотом
-    // ему никто не снимал. Через переворот очередь показывать страницу
-    // доходит до него — новая страница честно на нём нарисована, но сам он всё
-    // ещё за левым краем, и читатель видит под уезжающей страницей пустоту.
-    // Поэтому положение снимается здесь, до анимации, а не в конце прошлой:
-    // к первому кадру переворота новая страница обязана уже лежать на месте.
-    //
-    // Крой тут важнее смещения. Застрявшее смещение портит копию прежней
-    // страницы — ту, которой всё равно суждено уехать. Застрявший крой
-    // спрятал бы кусок настоящей: того самого листа, на котором книга стоит.
-    for (std::size_t index = 0; index < sheet_.size(); ++index) {
-        SpriteVisual const& sheet = sheet_[index];
-
-        // Сначала снять анимацию, потом писать. Пока анимация на свойстве
-        // жива, прямая запись до него не доходит, и лист, которому не дали
-        // доехать при быстром листании, доехал бы уже в роли того, на котором
-        // книга стоит, — то есть унёс бы страницу за край.
-        sheet.stopAnimation(L"Offset");
-        sheet.stopAnimation(L"RotationAngleInDegrees");
-        sheet.offset({0.0f, 0.0f, 0.0f});
-        sheet.rotationAngleInDegrees(0.0f);
-
-        // В покое крой отпущен на вылет тени: нулевые отступы — это ровно
-        // лист, а тени положено лежать за его краем.
-        InsetClip const& crop = clip_[index];
-        crop.stopAnimation(L"LeftInset");
-        crop.stopAnimation(L"RightInset");
-        crop.leftInset(-kShadowReach);
-        crop.rightInset(-kShadowReach);
-        crop.topInset(-kShadowReach);
-        crop.bottomInset(-kShadowReach);
-
-        if (index < shadow_.size()) shadow_[index].opacity(0.0f);
+    // Тени у каждого листа пула свои — красим все. Тень уезжающего листа не
+    // градиент, а размытие: тон непрозрачный, прозрачностью правит сама тень.
+    for (Flip& f : flips_) {
+        paint(f.foldBrush.colorStops(), kFoldNear, kFoldMid);
+        paint(f.edgeBrush.colorStops(), kEdgeNear, kEdgeMid);
+        paint(f.bendBrush.colorStops(), kBendNear, kBendMid);
+        f.shadow.color(tinted(hue, 1.0f));
     }
-
-    fold_.value().stopAnimation(L"Offset");
-    fold_.value().stopAnimation(L"Scale");
-    fold_.value().stopAnimation(L"Opacity");
-    fold_.value().isVisible(false);
-    foldMid_.value().stopAnimation(L"Offset");
-
-    edge_.value().stopAnimation(L"Offset");
-    edge_.value().isVisible(false);
-
-    leaf_.value().stopAnimation(L"Offset");
-    leaf_.value().isVisible(false);
-    bend_.value().stopAnimation(L"Offset");
-    bend_.value().stopAnimation(L"Opacity");
-    bend_.value().opacity(1.0f);
-    leafCrop_.value().stopAnimation(L"LeftInset");
-    leafCrop_.value().stopAnimation(L"RightInset");
 }
 
-void BookView::animateTurn(bool forward) {
-    resetSheets();
+void BookView::animateTurn(Flip& flip, bool forward) {
+    // Плоское листание: новые листы — под старыми. Только что заведённый лист
+    // кладём в самый низ контейнера, над задником; уже летящие остаются выше и
+    // уезжают первыми, открывая тех, что под ними.
+    VisualCollection const children = sheets_.value().children();
+    children.remove(flip.sheet);
+    children.insertAtBottom(flip.sheet);
 
-    // Уезжает всегда копия прежней страницы, приходит всегда новая. Разница
-    // между «вперёд» и «назад» только в том, кто из них наверху: вперёд
-    // прежний лист уходит влево, назад новый приходит слева.
-    SpriteVisual const& moving = forward ? spare() : resting();
-    raise(moving);
-
-    // Уехать надо дальше собственной ширины. Лист поворачивается вокруг левого
-    // края, и его дальний нижний угол отходит от оси не на ширину, а на
-    // гипотенузу: к ширине, укороченной косинусом, добавляется половина высоты,
-    // умноженная на синус. Уезжай лист ровно на ширину — этот угол так и
-    // оставался бы в кадре полоской бумаги у левого края.
-    // Плюс тень: она сдвинута вправо и размыта, поэтому переживает бумагу и
-    // осталась бы у левого края серой полоской, уйди лист ровно по своему углу.
-    const float away =
-        -(width_ * kTurnCos + height_ * 0.5f * kTurnSin + kShadowShift + kShadowBlur);
-    const float from = forward ? 0.0f : away;
-    const float to = forward ? away : 0.0f;
-    const float angleFrom = forward ? 0.0f : -kTurnAngle;
-    const float angleTo = forward ? -kTurnAngle : 0.0f;
+    // Уезжает копия уходящего разворота (flip.sheet), открывая задник — новый
+    // разворот. Уехать надо дальше собственной ширины: лист поворачивается
+    // вокруг левого края, и его дальний нижний угол отходит не на ширину, а на
+    // гипотенузу (ширина·cos + полвысоты·sin); плюс тень, сдвинутую вправо и
+    // размытую, иначе она осталась бы у края серой полоской. Вперёд лист уходит
+    // влево, назад — вправо.
+    const float reach = width_ * kTurnCos + height_ * 0.5f * kTurnSin + kShadowShift + kShadowBlur;
+    const float to = forward ? -reach : reach;
+    const float angleTo = forward ? -kTurnAngle : kTurnAngle;
 
     auto const easing = compositor_.createLinearEasingFunction();
 
     auto slide = compositor_.createVector3KeyFrameAnimation();
     slide.duration(kTurn);
-    slide.insertKeyFrame(0.0f, Vector3{from, 0.0f, 0.0f}, easing);
+    slide.insertKeyFrame(0.0f, Vector3{0.0f, 0.0f, 0.0f}, easing);
     slide.insertKeyFrame(1.0f, Vector3{to, 0.0f, 0.0f}, easing);
 
     auto turn = compositor_.createScalarKeyFrameAnimation();
     turn.duration(kTurn);
-    turn.insertKeyFrame(0.0f, angleFrom, easing);
+    turn.insertKeyFrame(0.0f, 0.0f, easing);
     turn.insertKeyFrame(1.0f, angleTo, easing);
 
     // Тень — не украшение: лист и страница под ним одного цвета, и без тени
-    // глаз не видит, что один поднят над другим. Заведена она в applySize,
-    // где у листа появляется кисть — она же ей и маска, поэтому тень
-    // повторяет лист, а не описанный вокруг прямоугольник.
-    shadow_[forward ? 1 - resting_ : resting_].opacity(kShadowOpacity);
+    // глаз не видит, что один поднят над другим.
+    flip.shadow.opacity(kShadowOpacity);
+    flip.sheet.isVisible(true);
 
-    // В конце переворота делать нечего, поэтому конец и не отслеживается:
-    // уехавший лист так и остаётся уехавшим до своего следующего выхода, а
-    // приводит его в порядок начало следующего переворота — там это нужно, а
-    // здесь было бы обещанием, которое некому исполнить, если анимацию
-    // прервали.
-    moving.startAnimation(L"Offset", slide);
-    moving.startAnimation(L"RotationAngleInDegrees", turn);
+    // Конец переворота отслеживается пакетом: по нему лист освобождается в пул.
+    // Пакет закрывает и остановленную анимацию, поэтому обработчик проверяет и
+    // жизнь полосы, и свой ли это лист (epoch).
+    const std::uint32_t epoch = flip.epoch;
+    Flip* const which = &flip;
+    auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
+    flip.sheet.startAnimation(L"Offset", slide);
+    flip.sheet.startAnimation(L"RotationAngleInDegrees", turn);
+    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
+                              Object const&, CompositionBatchCompletedEventArgs&) {
+        if (alive.expired() || which->epoch != epoch) return;
+        finishFlip(*which);
+        settleSheets();
+    });
+    batch.end();
 }
 
-void BookView::animateSpreadTurn(bool forward) {
-    resetSheets();
-
+void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // Уходит старый разворот, и в обе стороны он остаётся сверху: книжное
     // листание снимает верхнюю бумагу с неподвижной стопки, а не увозит
-    // страницу за край. Новый разворот уже нарисован и уже лежит под ней —
-    // тем же порядком в startTurn, что и у обычного переворота.
-    SpriteVisual const& going = spare();
-    InsetClip const& goingCrop = clip_[1 - resting_];
-    SpriteVisual const& coming = leaf_.value();
-    InsetClip const& comingCrop = leafCrop_.value();
-    SpriteVisual const& fold = fold_.value();
+    // страницу за край. Новый разворот уже нарисован задником и лежит под
+    // листом — так же, как в startTurn.
+    SpriteVisual const& going = flip.sheet;
+    InsetClip const& goingCrop = flip.clip;
+    SpriteVisual const& coming = flip.leaf;
+    InsetClip const& comingCrop = flip.leafClip;
+    SpriteVisual const& fold = flip.fold;
+    SpriteVisual const& rim = flip.edge;
 
-    // Приходящий лист носит кисть того самого разворота, что лежит под ним:
-    // страница на нём уже нарисована, и нужны от неё только другое место и
+    // Приходящий лист носит кисть задника — того самого нового разворота, что
+    // лежит под ним: страница на нём уже нарисована, нужны лишь другое место и
     // своё окно. Кисть DrawingSurface делает новую на каждый вызов, а
-    // поверхность за ней всё та же — второй отрисовки не возникает.
-    coming.brush(surface_[resting_].brush());
+    // поверхность за ней та же — второй отрисовки не возникает.
+    coming.brush(backdrop_->brush());
 
-    // Пять слоёв по глубине: новый разворот внизу, тень сгиба над ним,
-    // снимаемая бумага, тень наружного края приходящего листа — она лежит
-    // на снимаемой бумаге, а не на самом листе, — и лист сверху. Каждый
-    // слой — вынуть и вставить, по той же причине, что и в raise(): визуал
-    // с родителем композитор переставлять отказывается.
-    SpriteVisual const& rim = edge_.value();
+    // Новые листы — над старыми: группу этого листа целиком поднимаем на верх
+    // контейнера, над уже летящими. Внутри группы четыре слоя снизу вверх: тень
+    // сгиба, снимаемая бумага, тень наружного края приходящего листа (лежит на
+    // снимаемой бумаге), сам лист. Каждый слой — вынуть и вставить наверх по
+    // очереди: визуал с родителем композитор переставлять отказывается, а
+    // insertAtTop по порядку и даёт нужную стопку — и всю её поверх старых.
     VisualCollection const children = sheets_.value().children();
-    children.remove(resting());
-    children.insertAtBottom(resting());
     children.remove(fold);
-    children.insertAbove(fold, resting());
+    children.insertAtTop(fold);
     children.remove(going);
-    children.insertAbove(going, fold);
+    children.insertAtTop(going);
     children.remove(rim);
-    children.insertAbove(rim, going);
+    children.insertAtTop(rim);
     children.remove(coming);
     children.insertAtTop(coming);
 
@@ -1447,8 +1407,8 @@ void BookView::animateSpreadTurn(bool forward) {
     const float lead = forward ? 0.0f : -width_;
     const float direction = forward ? 1.0f : -1.0f;
 
-    foldBrush_.value().startPoint({forward ? 0.0f : 1.0f, 0.0f});
-    foldBrush_.value().endPoint({forward ? 1.0f : 0.0f, 0.0f});
+    flip.foldBrush.startPoint({forward ? 0.0f : 1.0f, 0.0f});
+    flip.foldBrush.endPoint({forward ? 1.0f : 0.0f, 0.0f});
 
     auto follow = compositor_.createVector3KeyFrameAnimation();
     follow.duration(kLeafSlide);
@@ -1528,8 +1488,8 @@ void BookView::animateSpreadTurn(bool forward) {
     const float band = width_ * kEdgeOfWindow;
     const float behind = forward ? -band : 0.0f;
 
-    edgeBrush_.value().startPoint({forward ? 1.0f : 0.0f, 0.0f});
-    edgeBrush_.value().endPoint({forward ? 0.0f : 1.0f, 0.0f});
+    flip.edgeBrush.startPoint({forward ? 1.0f : 0.0f, 0.0f});
+    flip.edgeBrush.endPoint({forward ? 0.0f : 1.0f, 0.0f});
 
     auto trail = compositor_.createVector3KeyFrameAnimation();
     trail.duration(kLeafSlide);
@@ -1544,8 +1504,8 @@ void BookView::animateSpreadTurn(bool forward) {
     const float bendFrom = forward ? -bendWidth : width_;
     const float bendTo = forward ? leftPage - bendWidth : leftPage;
 
-    bendBrush_.value().startPoint({forward ? 1.0f : 0.0f, 0.0f});
-    bendBrush_.value().endPoint({forward ? 0.0f : 1.0f, 0.0f});
+    flip.bendBrush.startPoint({forward ? 1.0f : 0.0f, 0.0f});
+    flip.bendBrush.endPoint({forward ? 0.0f : 1.0f, 0.0f});
 
     auto curve = compositor_.createVector3KeyFrameAnimation();
     curve.duration(kLeafSlide);
@@ -1562,17 +1522,18 @@ void BookView::animateSpreadTurn(bool forward) {
     settle.insertKeyFrame(kHandover, 1.0f, easing);
     settle.insertKeyFrame(1.0f, 0.0f, easing);
 
+    going.isVisible(true);
     fold.isVisible(true);
     rim.isVisible(true);
     coming.isVisible(true);
 
-    // Конец здесь, в отличие от обычного переворота, отслеживается: за ним
-    // может стоять очередь. Говорит о нём пакет, а не таймер: время анимации
-    // отсчитывает композитор, и его ответ — единственный, который не разойдётся
-    // с картинкой.
-    turning_ = true;
-    turnForward_ = forward;
-    const std::uint32_t epoch = ++turnEpoch_;
+    // Конец отслеживается пакетом: по нему лист освобождается в пул. Пакет
+    // закрывает и остановленную анимацию (лист добили при быстром листании или
+    // сбросили при перевёрстке), поэтому обработчик проверяет и жизнь полосы, и
+    // свой ли это лист — по epoch: у добитого он уже сменился, и обработчик
+    // узнаёт свой номер чужим и молчит.
+    const std::uint32_t epoch = flip.epoch;
+    Flip* const which = &flip;
 
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
 
@@ -1580,25 +1541,18 @@ void BookView::animateSpreadTurn(bool forward) {
     fold.startAnimation(L"Offset", follow);
     fold.startAnimation(L"Scale", widen);
     fold.startAnimation(L"Opacity", lighten);
-    foldMid_.value().startAnimation(L"Offset", flatten);
+    flip.foldMid.startAnimation(L"Offset", flatten);
     rim.startAnimation(L"Offset", trail);
     coming.startAnimation(L"Offset", slide);
     comingCrop.startAnimation(opening, open);
-    bend_.value().startAnimation(L"Offset", curve);
-    bend_.value().startAnimation(L"Opacity", settle);
+    flip.bend.startAnimation(L"Offset", curve);
+    flip.bend.startAnimation(L"Opacity", settle);
 
-    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), epoch](
+    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
                         Object const&, CompositionBatchCompletedEventArgs&) {
-        // Полосы может уже не быть: книгу закрывают и посреди переворота, а
-        // пакет о конце сообщает после него.
-        if (alive.expired()) return;
-
-        // Пакет закрывает и остановленная анимация, так что «конец» приходит
-        // и на переворот, который отменили встречным листанием. Прибирать за
-        // ним нечего — за него уже прибрал resetSheets следующего.
-        if (epoch != turnEpoch_) return;
-
-        turnCompleted();
+        if (alive.expired() || which->epoch != epoch) return;
+        finishFlip(*which);
+        settleSheets();
     });
     batch.end();
 }
