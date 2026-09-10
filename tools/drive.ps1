@@ -20,6 +20,9 @@
 #   click <x> <y>     щелчок в точке от левого верхнего угла окна, в пикселях
 #   rclick <x> <y>    то же правой кнопкой
 #   size              прямоугольник окна: x;y;ширина;высота
+#   resize <ш> <в>    задать окну размер (из максимизации выводит); снимок сразу
+#                     за ним ловит просвет растяжки — то, что нарисовано до
+#                     того, как остров XAML успел переверстаться
 #   title             заголовок окна
 
 [CmdletBinding()]
@@ -144,6 +147,12 @@ try {
                 Write-Output "title: $($sb.ToString())"
             }
             'size'  { $r = Get-WindowRect; Write-Output "size: $($r.X);$($r.Y);$($r.W);$($r.H)" }
+            'resize' {
+                $wh = $rest -split '\s+'
+                [void][Win]::ShowWindow($hwnd, 9)   # SW_RESTORE: максимизированное окно размера не примет
+                # SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE: только размер.
+                [void][Win]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, [int]$wh[0], [int]$wh[1], 0x0016)
+            }
             'key'   { Raise-Window; [System.Windows.Forms.SendKeys]::SendWait($rest); Start-Sleep -Milliseconds 120 }
             'type'  { Raise-Window; [System.Windows.Forms.SendKeys]::SendWait($rest); Start-Sleep -Milliseconds 120 }
             'click' {
