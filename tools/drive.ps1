@@ -83,7 +83,20 @@ while ($process.MainWindowHandle -eq [IntPtr]::Zero) {
 }
 $hwnd = $process.MainWindowHandle
 
+# Приложение, которого не стало, выглядит для остальных команд как окно
+# нулевого размера -- и жаловались они именно на размер, пряча настоящую
+# новость. Спрашиваем сам процесс: код возврата разом отвечает, вышло оно само
+# (0 или свой код) или упало (0xC0000005 и подобные).
+function Assert-Alive {
+    $process.Refresh()
+    if (-not $process.HasExited) { return }
+
+    $code = $process.ExitCode
+    throw ("Приложение завершилось: код {0} (0x{1:X8})." -f $code, $code)
+}
+
 function Get-WindowRect {
+    Assert-Alive
     $r = New-Object Win+RECT
     [void][Win]::GetWindowRect($hwnd, [ref]$r)
     return @{ X = $r.Left; Y = $r.Top; W = $r.Right - $r.Left; H = $r.Bottom - $r.Top }
@@ -145,6 +158,7 @@ try {
             'wait'  { Start-Sleep -Milliseconds ([int]$rest) }
             'shot'  { Save-Shot ($(if ($rest) { $rest } else { 'shot.png' })) }
             'title' {
+                Assert-Alive
                 $sb = New-Object System.Text.StringBuilder 512
                 [void][Win]::GetWindowTextW($hwnd, $sb, $sb.Capacity)
                 Write-Output "title: $($sb.ToString())"
