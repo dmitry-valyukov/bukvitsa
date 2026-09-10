@@ -203,7 +203,7 @@ constexpr float kFoldMidSoft = 0.62f;
 /// бумаге, в отличие от корешкового, который поднят и оттого мажет широко.
 /// Без неё лист не читается отдельной бумагой поверх страницы — а на неё вся
 /// вторая половина переворота и опирается. Тоже в долях окна.
-constexpr float kEdgeOfWindow = 0.026f;
+constexpr float kEdgeOfWindow = 0.039f;
 constexpr std::uint32_t kEdgeNear = 0x70000000;
 constexpr std::uint32_t kEdgeMid = 0x26000000;
 constexpr float kEdgeMidStop = 0.42f;
