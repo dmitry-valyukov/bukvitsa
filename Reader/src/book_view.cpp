@@ -226,6 +226,52 @@ constexpr float kBendMidStop = 0.45f;
 /// проценты пути.
 constexpr float kHandover = 0.78f;
 
+/// Подъём листа к глазу: во сколько раз свободный край выше собственной высоты
+/// в верхней точке переворота. У корешка лист остаётся в своих размерах — там
+/// он держится страницы и не поднимается вовсе, — а к свободному краю растёт, и
+/// прямоугольник становится трапецией. Это и есть «ближе»: край, который
+/// перелистывают, идёт к глазу, и глаз читает больший размер как меньшее
+/// расстояние.
+constexpr float kLiftPeak = 1.25f;
+
+/// Выключка подъёма — своя, с погасшей скоростью на концах. Подъём состоит из
+/// двух отрезков, вверх и вниз, и общая кривая листания (kEase*), у которой
+/// концы намеренно не гаснут, дала бы на вершине излом — глаз читает такой
+/// излом щелчком. Здесь лист трогается плавно, замирает наверху и так же
+/// плавно ложится.
+constexpr float kLiftEaseX1 = 0.50f, kLiftEaseY1 = 0.0f;
+constexpr float kLiftEaseX2 = 0.50f, kLiftEaseY2 = 1.0f;
+
+/// Трапеция листа — формула, которую композитор считает каждый кадр.
+///
+/// Аффинной матрицей трапеции не выйдет: сдвиг, поворот и растяжение сохраняют
+/// параллельность сторон, и прямоугольник ими становится параллелограммом.
+/// Нужен проективный переход — четвёртый столбец Matrix4x4, тот самый, которым
+/// композиция делает перспективу: композитор делит на W после умножения, и
+/// линейный по x знаменатель поднимает высоту тем сильнее, чем дальше от
+/// корешка.
+///
+/// Вывод. Пусть корешок стоит в Hinge, свободный край отстоит от него на d, и
+/// высота у края должна вырасти в k раз. В долях u = (x - Hinge)/d переход
+///     W = 1 + p·u,   X = u·(1 + p),   Y = y - Half
+/// при p = 1/k - 1 даёт ровно требуемое: у корешка (u = 0) единица, у края
+/// (u = 1) высота в k раз. Раскрыв u обратно в x, получаем числа ниже: Slant —
+/// это p, Fall — p/d, Half — середина листа по высоте, от которой он растёт в
+/// обе стороны. Ширина при этом поджимается сама, как в перспективе: дальняя
+/// от глаза половина листа занимает меньше места, чем ближняя, — этого не
+/// избежать и не надо, ровно так выглядит наклонённая бумага.
+///
+/// Amount — доля подъёма, 0..1. Все шестнадцать чисел линейны по ней, поэтому
+/// её одной довольно, чтобы вести трапецию во времени обычной скалярной
+/// анимацией: матричной покадровой анимации в композиции нет.
+constexpr wchar_t kLiftFormula[] =
+    L"Matrix4x4("
+    L"1 + lift.Amount * (Slant + Hinge * Fall), lift.Amount * Half * Fall, 0, lift.Amount * Fall,"
+    L"0, 1, 0, 0,"
+    L"0, 0, 1, 0,"
+    L"-Hinge * lift.Amount * (Slant + Hinge * Fall), -Hinge * lift.Amount * Half * Fall, 0,"
+    L"1 - Hinge * lift.Amount * Fall)";
+
 /// Прозрачность из записанного цвета. Нужна затем, чтобы средник и полутон
 /// изгиба брали её из одного места: они обязаны совпасть, иначе подмена в
 /// конце переворота будет видна ступенькой.
@@ -247,6 +293,26 @@ Color tinted(const D2D1_COLOR_F& color, float alpha) {
 /// То же для Direct2D, которым рисуется средник.
 D2D1_COLOR_F tintedF(const D2D1_COLOR_F& color, float alpha) {
     return {color.r, color.g, color.b, alpha};
+}
+
+/// Ставит трапецию на одну сторону листа: у `hinge` она остаётся в своих
+/// размерах, у `freeEdge` вырастает в kLiftPeak раз — во столько, сколько
+/// скажет Amount в `phase`.
+///
+/// Обе стороны листа — снимаемая бумага и приходящий лист — берут общий
+/// корешок и свои, противоположные, свободные края. Оттого они и сходятся на
+/// сгибе в одной высоте: точка на расстоянии s от корешка поднята одинаково, с
+/// какой бы стороны бумаги она ни была, а сгиб — это одна точка, видимая с
+/// обеих. Ничего согласовывать для этого не нужно, так выходит само.
+void liftSheet(ExpressionAnimation const& warp, CompositionPropertySet const& phase,
+               Visual const& visual, float hinge, float freeEdge, float height) {
+    const float slant = 1.0f / kLiftPeak - 1.0f;
+    warp.setReferenceParameter(L"lift", phase);
+    warp.setScalarParameter(L"Slant", slant);
+    warp.setScalarParameter(L"Fall", slant / (freeEdge - hinge));
+    warp.setScalarParameter(L"Half", height * 0.5f);
+    warp.setScalarParameter(L"Hinge", hinge);
+    visual.startAnimation(L"TransformMatrix", warp);
 }
 
 bool controlHeld() {
@@ -704,8 +770,6 @@ bool BookView::applySize(float width, float height, float scale) {
     for (Flip& flip : flips_) {
         flip.surface->resize(pixels);
         flip.sheet.size({width, height});
-        // Поворот идёт вокруг левого края: там корешок, оттуда лист и поднимается.
-        flip.sheet.centerPoint({0.0f, height * 0.5f, 0.0f});
         // Полоска тени сгиба меряется целым разворотом (её ужимает Scale по
         // ходу), приходящий лист — тоже; тени края и полутон изгиба — постоянной
         // ширины в долях окна.
@@ -1272,8 +1336,6 @@ BookView::Flip BookView::makeFlip() {
     SpriteVisual sheet = compositor_.createSpriteVisual();
     sheet.brush(surface.brush());
     sheet.size({width_, height_});
-    // Поворот идёт вокруг левого края: там корешок, оттуда лист и поднимается.
-    sheet.centerPoint({0.0f, height_ * 0.5f, 0.0f});
     // Крой в покое отпущен на вылет тени: нулевые отступы — ровно лист, а тени
     // положено лежать за его краем.
     InsetClip clip = compositor_.createInsetClip(-kShadowReach, -kShadowReach, -kShadowReach,
@@ -1332,6 +1394,15 @@ BookView::Flip BookView::makeFlip() {
     bend.size({width_ * kBendOfWindow, height_});
     leaf.children().insertAtTop(bend);
 
+    // Подъём листа к глазу (книжное листание): доля подъёма — скаляр в
+    // собственных свойствах листа, а две трапеции читают её выражениями. Числа
+    // геометрии ставит начало каждого переворота: корешок и свободный край
+    // зависят от стороны листания, а размеры — от окна.
+    CompositionPropertySet lift = sheet.properties();
+    lift.insertScalar(L"Amount", 0.0f);
+    ExpressionAnimation sheetLift = compositor_.createExpressionAnimation(kLiftFormula);
+    ExpressionAnimation leafLift = compositor_.createExpressionAnimation(kLiftFormula);
+
     // Все листовые визуалы — в контейнер; их Z на каждый переворот уточняет
     // анимация (плоское — под старые, книжное — над старыми).
     VisualCollection const children = sheets_.value().children();
@@ -1340,8 +1411,9 @@ BookView::Flip BookView::makeFlip() {
     children.insertAtTop(edge);
     children.insertAtTop(leaf);
 
-    return Flip{std::move(surface), sheet, clip,     shadow,  leaf, leafClip, bend,
-                bendBrush,          fold,  foldBrush, foldMid, edge, edgeBrush};
+    return Flip{std::move(surface), sheet,     clip,      shadow,  leaf, leafClip, bend,
+                bendBrush,          fold,      foldBrush, foldMid, edge, edgeBrush,
+                lift,               sheetLift, leafLift};
 }
 
 void BookView::finishFlip(Flip& flip) {
@@ -1379,6 +1451,17 @@ void BookView::finishFlip(Flip& flip) {
     flip.bend.opacity(1.0f);
     flip.leafClip.stopAnimation(L"LeftInset");
     flip.leafClip.stopAnimation(L"RightInset");
+
+    // Подъём снимается с обеих сторон листа, и трапеция сходит в тождественную.
+    // Не только ради вида застывшего листа: выражение, оставленное на свойстве,
+    // композитор считает каждый кадр — за все свободные листы пула и без
+    // всякой нужды.
+    flip.lift.stopAnimation(L"Amount");
+    flip.lift.insertScalar(L"Amount", 0.0f);
+    flip.sheet.stopAnimation(L"TransformMatrix");
+    flip.sheet.transformMatrix(identity_matrix());
+    flip.leaf.stopAnimation(L"TransformMatrix");
+    flip.leaf.transformMatrix(identity_matrix());
 
     flip.active = false;
 }
@@ -1510,6 +1593,12 @@ void BookView::animateTurn(Flip& flip, bool forward) {
     flip.sheet.brush(flip.surface->brush());
     flip.shadow.mask(flip.sheet.brush());
 
+    // Поворот идёт вокруг левого края: там корешок, оттуда лист и поднимается.
+    // Ставится здесь, а не раз на лист: центр преобразования принадлежит
+    // плоскому листанию, а книжное его обнуляет — там лист не поворачивается, а
+    // гнётся трапецией от собственного начала координат.
+    flip.sheet.centerPoint({0.0f, height_ * 0.5f, 0.0f});
+
     // Плоское листание: новые листы — под старыми. Только что заведённый лист
     // кладём в самый низ контейнера, над страницами; уже летящие остаются выше
     // и уезжают первыми, открывая тех, что под ними.
@@ -1630,6 +1719,17 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
         goingCrop.leftInset(leftPage);
     else
         goingCrop.rightInset(rightPage);
+
+    // Лист поднимается к глазу: у корешка он в своих размерах, к свободному
+    // краю растёт трапецией. Корешок у обеих сторон общий, а свободные края
+    // противоположны — это один и тот же край бумаги, только у снимаемой
+    // стороны он ещё снаружи перелистываемой страницы, а у приходящей уже
+    // перевёрнут на другую сторону разворота. Центр преобразования при этом
+    // обнуляется: трапеция задана от начала координат листа, а центр нужен
+    // только плоскому листанию, где вокруг него идёт поворот.
+    going.centerPoint({0.0f, 0.0f, 0.0f});
+    liftSheet(flip.sheetLift, flip.lift, going, leftPage, forward ? width_ : 0.0f, height_);
+    liftSheet(flip.leafLift, flip.lift, coming, leftPage, forward ? 0.0f : width_, height_);
 
     // Пологая S-кривая: рука, тянущая бумагу, слегка разгоняется в начале и
     // тормозит к корешку — не роняет тяжесть, но и не тянет мёртво-равномерно
@@ -1767,6 +1867,18 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     settle.insertKeyFrame(kHandover, 1.0f, easing);
     settle.insertKeyFrame(1.0f, 0.0f, easing);
 
+    // Доля подъёма — вверх к середине переворота и обратно вниз. Ею одной
+    // ведутся обе трапеции: все числа матрицы линейны по этой доле, и
+    // композитор пересчитывает их сам (kLiftFormula).
+    auto const liftEasing = compositor_.createCubicBezierEasingFunction(
+        {kLiftEaseX1, kLiftEaseY1}, {kLiftEaseX2, kLiftEaseY2});
+
+    auto rise = compositor_.createScalarKeyFrameAnimation();
+    rise.duration(kLeafSlide);
+    rise.insertKeyFrame(0.0f, 0.0f, liftEasing);
+    rise.insertKeyFrame(0.5f, 1.0f, liftEasing);
+    rise.insertKeyFrame(1.0f, 0.0f, liftEasing);
+
     going.isVisible(true);
     fold.isVisible(true);
     rim.isVisible(true);
@@ -1792,6 +1904,7 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     comingCrop.startAnimation(opening, open);
     flip.bend.startAnimation(L"Offset", curve);
     flip.bend.startAnimation(L"Opacity", settle);
+    flip.lift.startAnimation(L"Amount", rise);
 
     batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
                         Object const&, CompositionBatchCompletedEventArgs&) {
