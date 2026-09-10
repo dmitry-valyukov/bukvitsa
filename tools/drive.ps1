@@ -16,6 +16,9 @@
 #   wait <мс>         пауза
 #   shot [файл]       PNG окна (по умолчанию shot.png, каталог задаёт -ShotDir)
 #   key <клавиши>     SendKeys: {PGDN} {PGUP} {HOME} {END} {ESC} ^{ADD} и т.п.
+#   press <клавиши>   то же, но без поднятия окна и без паузы после: для пачек
+#                     нажатий, где счёт идёт на десятки миллисекунд (листание
+#                     внахлёст) — окно уже поднято предыдущей командой
 #   type <текст>      набор текста в фокус
 #   click <x> <y>     щелчок в точке от левого верхнего угла окна, в пикселях
 #   rclick <x> <y>    то же правой кнопкой
@@ -154,6 +157,7 @@ try {
                 [void][Win]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, [int]$wh[0], [int]$wh[1], 0x0016)
             }
             'key'   { Raise-Window; [System.Windows.Forms.SendKeys]::SendWait($rest); Start-Sleep -Milliseconds 120 }
+            'press' { [System.Windows.Forms.SendKeys]::SendWait($rest) }
             'type'  { Raise-Window; [System.Windows.Forms.SendKeys]::SendWait($rest); Start-Sleep -Milliseconds 120 }
             'click' {
                 Raise-Window
