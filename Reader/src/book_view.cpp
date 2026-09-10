@@ -297,6 +297,15 @@ Grid BookView::buildTree() {
     sheets_ = compositor_.createContainerVisual();
     sheets_.value().clip(compositor_.createInsetClip());
 
+    // Открывающаяся страница книжного листания — на самом дне контейнера, под
+    // всеми листами: снимаемая бумага поднимается с неё. Кисть и крой ей ставит
+    // каждый переворот (animateSpreadTurn), размер — applySize.
+    beneath_ = compositor_.createSpriteVisual();
+    beneathClip_ = compositor_.createInsetClip();
+    beneath_.value().clip(beneathClip_.value());
+    beneath_.value().isVisible(false);
+    sheets_.value().children().insertAtBottom(beneath_.value());
+
     // Пул листов зарезервирован под предел: дальше push_back не переселяет
     // вектор, и указатели на листы, что держат обработчики конца переворота,
     // остаются годными.
@@ -680,6 +689,7 @@ bool BookView::applySize(float width, float height, float scale) {
         flip.bend.size({width * kBendOfWindow, height});
     }
     sheets_.value().size({width, height});
+    beneath_.value().size({width, height});
 
     // Окна кроя листов заданы в прежних числах и после смены размера
     // бессмысленны — все идущие перевороты в покой: доигрывать их по новым
@@ -1127,10 +1137,14 @@ void BookView::startTurn(const Column& target, bool forward) {
     if (book) {
         // Режим книги: задник на новый разворот НЕ переводим — его старая
         // неперелистываемая половина (при листании вперёд левая) обязана
-        // оставаться на виду до конца анимации. Приходящую половину несёт сам
-        // лист: собираем новый разворот и рисуем его в поверхность листа —
-        // animateSpreadTurn выведет из неё приходящую страницу. Задник переедет
-        // на новый разворот при оседании (settleSheets), сняв backdropStale_.
+        // оставаться на виду, пока приходящий лист её не накроет. Новых страниц
+        // у переворота две — оборот снимаемой бумаги и та, что открывается под
+        // ней, — то есть ровно один новый разворот: собираем его и рисуем в
+        // поверхность листа, единственной отрисовкой на переворот. Из неё
+        // animateSpreadTurn выведет и приходящую страницу, и открывающуюся; всё
+        // старое лист заимствует у того, на чём оно уже нарисовано. Задник
+        // переедет на новый разворот при оседании (settleSheets), сняв
+        // backdropStale_, — обменом поверхностей, без отрисовки.
         buildSpread();
         drawSpread(*flip.surface);
         backdropStale_ = true;
@@ -1179,6 +1193,14 @@ BookView::Flip& BookView::acquireFlip() {
     finishFlip(*oldest);
     oldest->active = true;
     return *oldest;
+}
+
+BookView::Flip* BookView::newestFlip(const Flip* except) {
+    Flip* newest = nullptr;
+    for (Flip& f : flips_)
+        if (&f != except && (!newest || f.started > newest->started))
+            newest = &f;
+    return newest;
 }
 
 BookView::Flip BookView::makeFlip() {
@@ -1308,10 +1330,20 @@ void BookView::settleSheets() {
 
     // Все листы осели. Только теперь задник переезжает на новый разворот — в
     // режиме книги он всё листание держал старую неперелистываемую половину.
-    // redraw соберёт разворот под нынешним (уже целевым) местом и снимет флаг;
-    // задник встаёт новым за один кадр с сокрытием листов, поэтому подмены не
-    // видно. В режиме газеты задник переехал ещё в startTurn — флаг не взведён.
-    if (backdropStale_) redraw();
+    // Не рисуя: нынешний разворот уже нарисован в поверхность самого нового
+    // листа (startTurn), и задник просто меняется с ним поверхностями —
+    // прежний задник уходит листу под следующее листание. Так на пачку листов
+    // приходится ровно по одной отрисовке на лист и ни одной сверх. Кисти
+    // листа, глядевшие на его прежнюю поверхность, анимация переставляет на
+    // каждом перевороте заново. Задник встаёт новым за один кадр с сокрытием
+    // листов, поэтому подмены не видно. В режиме газеты задник переехал ещё в
+    // startTurn — флаг не взведён. Пока флаг взведён, самый новый лист в пуле
+    // есть: отпускает их только простой (onReleaseTick), а он наступает позже.
+    if (backdropStale_) {
+        std::swap(*backdrop_, *newestFlip(nullptr)->surface);
+        if (active_ && window_) window_->background(*backdrop_);
+        backdropStale_ = false;
+    }
 
     if (sheets_) sheets_.value().isVisible(false);
     armRelease();   // все листы свободны — отпускать пул по таймеру
@@ -1395,9 +1427,13 @@ void BookView::applyShadowTint() {
 
 void BookView::animateTurn(Flip& flip, bool forward) {
     // Уезжающий лист несёт уходящую страницу из собственной поверхности. Лист
-    // мог прежде служить в режиме книги, где его кисть переставлена на задник, —
-    // возвращаем свою: в газете он открывает задник, а не повторяет его.
+    // мог прежде служить в режиме книги, где его кисть переставлена на чужую
+    // поверхность, а своя ушла заднику обменом при оседании, — ставим нынешнюю
+    // свою и ей же маскируем тень: в газете лист открывает задник, а не
+    // повторяет его. Открывающаяся страница книжного листания здесь не нужна.
     flip.sheet.brush(flip.surface->brush());
+    flip.shadow.mask(flip.sheet.brush());
+    beneath_.value().isVisible(false);
 
     // Плоское листание: новые листы — под старыми. Только что заведённый лист
     // кладём в самый низ контейнера, над задником; уже летящие остаются выше и
@@ -1454,25 +1490,35 @@ void BookView::animateTurn(Flip& flip, bool forward) {
 void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // Уходит старый разворот, и в обе стороны он остаётся сверху: книжное
     // листание снимает верхнюю бумагу с неподвижной стопки, а не увозит
-    // страницу за край. Новый разворот уже нарисован задником и лежит под
-    // листом — так же, как в startTurn.
+    // страницу за край. У переворота две стороны разной давности: под снимаемой
+    // бумагой с первого же кадра открывается НОВАЯ страница, а неперелистываемая
+    // половина остаётся СТАРОЙ, пока приходящий лист её не накроет. Один задник
+    // обеих сразу не покажет, поэтому он держит старое (см. startTurn), а новое
+    // под бумагой показывает beneath_.
     SpriteVisual const& going = flip.sheet;
     InsetClip const& goingCrop = flip.clip;
     SpriteVisual const& coming = flip.leaf;
     InsetClip const& comingCrop = flip.leafClip;
     SpriteVisual const& fold = flip.fold;
     SpriteVisual const& rim = flip.edge;
+    SpriteVisual const& beneath = beneath_.value();
+    InsetClip const& beneathCrop = beneathClip_.value();
 
-    // Уходящий лист несёт СТАРУЮ перелистываемую половину — ту, что всё ещё на
-    // заднике: его кисть и берём. Задник на новый разворот ещё не переведён (см.
-    // startTurn), поэтому под неперелистываемой половиной листа остаётся старое.
-    going.brush(backdrop_->brush());
+    // Уходящий лист несёт СТАРУЮ перелистываемую половину — ту, что сейчас на
+    // виду. Она уже нарисована: у последнего ещё летящего листа в поверхности,
+    // а если таких нет — на заднике (последний осевший разворот). Её и
+    // заимствуем, своей отрисовки у уходящего нет. Осевший лист брать нельзя:
+    // свою поверхность он отдал заднику обменом (settleSheets).
+    const Flip* const previous = newestFlip(&flip);
+    going.brush(previous && previous->active ? previous->surface->brush() : backdrop_->brush());
 
-    // Приходящий лист несёт НОВУЮ перелистываемую половину: новый разворот
-    // нарисован в собственную поверхность листа (flip.surface) ещё в startTurn.
-    // Кисть DrawingSurface делает новую на каждый вызов, а поверхность за ней та
-    // же — второй отрисовки не возникает.
+    // Обе НОВЫЕ страницы — из поверхности листа, куда startTurn нарисовал новый
+    // разворот: приходящий лист несёт ту, что ляжет на неперелистываемую
+    // половину, открывающаяся — ту, что под снимаемой бумагой. Кисть
+    // DrawingSurface делает новую на каждый вызов, а поверхность за ней та же —
+    // второй отрисовки не возникает.
     coming.brush(flip.surface->brush());
+    beneath.brush(flip.surface->brush());
 
     // Новые листы — над старыми: последний подхваченный лист самый верхний, как
     // в настоящей книге — он ближе всех к глазу. Группу этого листа целиком
@@ -1480,6 +1526,8 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // они не затирают, потому что каждый несёт лишь свою перелистываемую
     // страницу (см. крой ниже), а не весь разворот. Внутри группы снизу вверх:
     // тень сгиба, снимаемая бумага, тень наружного края, приходящий лист.
+    // Открывающаяся страница — на дне контейнера (buildTree), под всеми: под
+    // верхней снимаемой бумагой лежит разворот самого нового листа — этого.
     VisualCollection const children = sheets_.value().children();
     children.remove(fold);
     children.insertAtTop(fold);
@@ -1501,11 +1549,17 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // Лист несёт только перелистываемую страницу: вперёд — правую (левую половину
     // разворота отрезаем к корешку неподвижным отступом), назад — левую. Иначе
     // неперелистываемая половина каждого листа затирала бы соседние листы при
-    // быстром листании внахлёст; за неё отвечает задник с самым новым разворотом.
-    if (forward)
+    // быстром листании внахлёст; за неё отвечает задник. Открывающаяся страница
+    // кроится той же половиной: она лежит ровно под снимаемой бумагой.
+    if (forward) {
         goingCrop.leftInset(leftPage);
-    else
+        beneathCrop.leftInset(leftPage);
+        beneathCrop.rightInset(0.0f);
+    } else {
         goingCrop.rightInset(rightPage);
+        beneathCrop.leftInset(0.0f);
+        beneathCrop.rightInset(rightPage);
+    }
 
     // Пологая S-кривая: рука, тянущая бумагу, слегка разгоняется в начале и
     // тормозит к корешку — не роняет тяжесть, но и не тянет мёртво-равномерно
@@ -1643,6 +1697,7 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     settle.insertKeyFrame(kHandover, 1.0f, easing);
     settle.insertKeyFrame(1.0f, 0.0f, easing);
 
+    beneath.isVisible(true);
     going.isVisible(true);
     fold.isVisible(true);
     rim.isVisible(true);
