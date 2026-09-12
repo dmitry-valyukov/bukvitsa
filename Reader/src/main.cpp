@@ -41,7 +41,7 @@ namespace {
 
 using namespace bukvitsa::reader;
 
-using wxl::async::task;
+using wxl::async::managed_task;
 
 // Пространство имён книги: `using namespace bukvitsa::reader` его не приносит,
 // а обход каталога разбирает документ сам.
@@ -119,19 +119,19 @@ struct App {
 
 /// Пишет настройки. Копией, а не ссылкой: между co_await читатель успеет
 /// поменять что-нибудь ещё, и на диск должно уйти то, что решили писать.
-task saveSettingsLater(Io& io, Settings settings) {
+managed_task saveSettingsLater(Io& io, Settings settings) {
     co_await io.writeFile(settingsPath(), settingsXml(settings));
 }
 
 /// Пишет состояние книги: место чтения и закладки.
-task saveStateLater(Io& io, std::wstring guid, BookState state) {
+managed_task saveStateLater(Io& io, std::wstring guid, BookState state) {
     if (guid.empty()) co_return;
 
     co_await io.writeFile(statePath(guid), bookStateXml(state));
 }
 
 /// Пишет реестр.
-task saveLibraryLater(Io& io, std::string xml) {
+managed_task saveLibraryLater(Io& io, std::string xml) {
     co_await io.writeFile(libraryPath(), std::move(xml));
 }
 
@@ -141,7 +141,7 @@ task saveLibraryLater(Io& io, std::string xml) {
 /// Это и есть «библиотека наполняется по мере чтения»: карточки встают сразу,
 /// а «прочитано 42%» проступает на каждой, как только её файл прочитан. Полка
 /// с сотней книг не ждёт сотни обращений к диску, чтобы показать первую.
-task fillProgress(Io& io, std::shared_ptr<LibraryScreen> shelf, std::vector<BookEntry> books) {
+managed_task fillProgress(Io& io, std::shared_ptr<LibraryScreen> shelf, std::vector<BookEntry> books) {
     for (const BookEntry& book : books) {
         if (book.characterCount == 0) continue;   // не открывалась -- и читать нечего
 
@@ -167,7 +167,7 @@ task fillProgress(Io& io, std::shared_ptr<LibraryScreen> shelf, std::vector<Book
 /// Разбирается при этом `fb3::Document`, а не `Book`: реестру нужны метаданные
 /// и обложка, а движок вёрстки с пагинатором книге, которую никто не открывал,
 /// ни к чему.
-task addFolderFlow(App app, std::filesystem::path folder, std::function<void()> showLibrary) {
+managed_task addFolderFlow(App app, std::filesystem::path folder, std::function<void()> showLibrary) {
     Io& io = *app.io;
 
     // Полка -- прежде обхода: читатель, добавивший каталог, должен видеть, как
@@ -225,7 +225,7 @@ task addFolderFlow(App app, std::filesystem::path folder, std::function<void()> 
 
 /// Сохраняет обложку из мастера: копия снимка, запись реестра, немедленное
 /// применение — сохранённая обложка тут же становится текущей темой.
-task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
+managed_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
                   std::function<void()> leaveWizard) {
     Io& io = *app.io;
 
@@ -277,7 +277,7 @@ task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого
 /// пути. Протух — спрашиваем реестр по guid; нет и там — читателю нечего
 /// продолжать, и он хотел открыть книгу.
-task continueReading(Io& io, std::shared_ptr<Settings> settings, std::shared_ptr<Library> library,
+managed_task continueReading(Io& io, std::shared_ptr<Settings> settings, std::shared_ptr<Library> library,
                      std::shared_ptr<WarmBook> warm,
                      std::function<void(std::filesystem::path)> openBook,
                      std::function<void()> addBook) {
@@ -323,7 +323,7 @@ task continueReading(Io& io, std::shared_ptr<Settings> settings, std::shared_ptr
 /// Разбор идёт в интерфейсном потоке, как и в openBookFlow, и иначе нельзя:
 /// память разбора берётся из STA-пула, а он чужого потока не терпит. Поток на
 /// это время занят — но занят он до нажатия, а не после.
-task warmBookFlow(App app, std::filesystem::path path) {
+managed_task warmBookFlow(App app, std::filesystem::path path) {
     // Не const: байты уходят в книгу перемещением (см. openBookFlow).
     std::optional<std::string> bytes = co_await app.io->readFile(path);
 
@@ -378,7 +378,7 @@ void revealBook(App const& app) {
 /// Две короткие дороги в начале: книга уже открыта (читатель вернулся к ней) —
 /// показать; книга прогрета (warmBookFlow) — взять её из памяти и не трогать
 /// диск.
-task openBookFlow(App app, std::filesystem::path path) {
+managed_task openBookFlow(App app, std::filesystem::path path) {
     Io& io = *app.io;
 
     // Эта книга уже открыта — читатель просто вернулся к ней со стартового
@@ -470,7 +470,7 @@ task openBookFlow(App app, std::filesystem::path path) {
 /// потом переставить -- значит показать читателю прыжок. Ждать при этом нечего:
 /// файл настроек читает рабочий поток, а этот тем временем уже крутит цикл
 /// сообщений.
-task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
+managed_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
                  std::function<void(std::filesystem::path)> openBook,
                  std::function<void()> showStartScreen,
                  std::function<void(std::filesystem::path)> warmBook) {

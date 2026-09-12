@@ -18,7 +18,7 @@ namespace io = bukvitsa::io;
 /// Чтение файла, записанное так, как будто оно синхронное. Каждое co_await
 /// уезжает в поток ввода-вывода и возвращается сюда — код между ними
 /// исполняется в основном потоке и больше нигде.
-io::task print_file(std::filesystem::path path)
+io::managed_task print_file(std::filesystem::path path)
 {
     io::reader rd = co_await io::file::open_async(path);
 
@@ -45,7 +45,7 @@ struct reading_report {
 /// Общая у них только очередь, и та не их забота. Отсюда и то, что `report`
 /// ничем не защищён: он принадлежит ей одной, а код между `co_await`
 /// исполняется только в основном потоке.
-io::task read_counting(std::filesystem::path path, reading_report& report, char mark)
+io::managed_task read_counting(std::filesystem::path path, reading_report& report, char mark)
 {
     io::reader rd = co_await io::file::open_async(path);
 
@@ -67,7 +67,7 @@ io::task read_counting(std::filesystem::path path, reading_report& report, char 
 }
 
 /// То же начало, но с правом отмены: здесь оно понадобится сразу.
-io::task open_with(std::filesystem::path path, io::cancellation_token token)
+io::managed_task open_with(std::filesystem::path path, io::cancellation_token token)
 {
     [[maybe_unused]] io::reader rd = co_await io::file::open_async(path, token);
 }
@@ -77,7 +77,7 @@ io::task open_with(std::filesystem::path path, io::cancellation_token token)
 /// Каждая точка на ленте — оборот насоса, на котором поток занялся не
 /// пагинацией. В настоящем приложении на этом месте разбирается ввод и
 /// перерисовывается окно; здесь достаточно того, что обороты вообще есть.
-io::task ui_heartbeat(const bool& paginated)
+io::managed_task ui_heartbeat(const bool& paginated)
 {
     while (!paginated) {
         co_await io::yield();
@@ -120,7 +120,7 @@ int main(int argc, char** argv)
 
     std::println("--- одна корутина ---");
 
-    io::task reading = print_file(path);
+    io::managed_task reading = print_file(path);
     loop.run_until([&reading] { return reading.done(); });
     reading.result();  // бросит то, чем кончилось чтение, если оно упало
 
@@ -131,7 +131,7 @@ int main(int argc, char** argv)
     constexpr int readers = 10;
 
     std::vector<reading_report> reports(readers);
-    std::vector<io::task> readings;
+    std::vector<io::managed_task> readings;
     readings.reserve(readers);
 
     std::cout << "порядок кусков: ";
@@ -139,9 +139,9 @@ int main(int argc, char** argv)
     for (int i = 0; i < readers; ++i)
         readings.emplace_back(read_counting(path, reports[i], static_cast<char>('0' + i)));
 
-    loop.run_until([&readings] { return std::ranges::all_of(readings, &io::task::done); });
+    loop.run_until([&readings] { return std::ranges::all_of(readings, &io::managed_task::done); });
 
-    for (io::task& reading_task : readings) reading_task.result();
+    for (io::managed_task& reading_task : readings) reading_task.result();
 
     const std::size_t expected = std::filesystem::file_size(path);
     const bool all_read_whole = std::ranges::all_of(
@@ -158,7 +158,7 @@ int main(int argc, char** argv)
     io::cancellation_source canceling;
     canceling.cancel();
 
-    io::task canceled = open_with(path, canceling.token());
+    io::managed_task canceled = open_with(path, canceling.token());
     loop.run_until([&canceled] { return canceled.done(); });
 
     try {
@@ -177,7 +177,7 @@ int main(int argc, char** argv)
     bukvitsa::Pages pages;
     bool paginated = false;
 
-    io::task ui = ui_heartbeat(paginated);
+    io::managed_task ui = ui_heartbeat(paginated);
 
     constexpr int layoutChanges = 2;
 
@@ -185,7 +185,7 @@ int main(int argc, char** argv)
         io::cancellation_source layoutChanged;
         pages = bukvitsa::Pages{};
 
-        io::task paging = bukvitsa::paginate(layout, pages, layoutChanged.token());
+        io::managed_task paging = bukvitsa::paginate(layout, pages, layoutChanged.token());
 
         if (attempt < layoutChanges) {
             // Читатель потянул за угол окна: покрутили насос немного и сменили

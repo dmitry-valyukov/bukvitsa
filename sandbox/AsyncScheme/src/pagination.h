@@ -36,6 +36,6 @@ struct Pages {
 /// по старой ширине нельзя.
 ///
 /// \param token право отменить: раскладка изменилась — считать надо заново.
-io::task paginate(const Layout& layout, Pages& pages, io::cancellation_token token);
+io::managed_task paginate(const Layout& layout, Pages& pages, io::cancellation_token token);
 
 }  // namespace bukvitsa

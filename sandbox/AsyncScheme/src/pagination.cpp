@@ -29,7 +29,7 @@ void showPage(const Pages& pages)
 
 }  // namespace
 
-io::task paginate(const Layout& layout, Pages& pages, io::cancellation_token token)
+io::managed_task paginate(const Layout& layout, Pages& pages, io::cancellation_token token)
 {
     for (int block = 0; block < layout.blocks; ++block) {
         measureBlock(layout, block);
