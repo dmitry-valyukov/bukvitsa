@@ -114,6 +114,18 @@ function Get-ActiveWindow {
     return $hwnd
 }
 
+function Move-Pointer([int]$x, [int]$y) {
+    # MOVE|ABSOLUTE, а не SetCursorPos, и по той же причине, что в перетаскивании
+    # ниже: SetCursorPos переставляет курсор, но событий указателя для
+    # современного стека ввода не рождает. WinUI такого перемещения не видит,
+    # а не увидев его — не считает последующее нажатие своим: кнопка не
+    # подсвечивается и Click не приходит.
+    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $ax = [uint32]([double]$x * 65535 / ($bounds.Width - 1))
+    $ay = [uint32]([double]$y * 65535 / ($bounds.Height - 1))
+    [Win]::mouse_event(0x8001, $ax, $ay, 0, [UIntPtr]::Zero)
+}
+
 function Raise-Window {
     [void][Win]::ShowWindow($hwnd, 5)   # SW_SHOW
 
@@ -177,8 +189,8 @@ try {
                 Raise-Window
                 $xy = $rest -split '\s+'
                 $r = Get-WindowRect
-                [void][Win]::SetCursorPos($r.X + [int]$xy[0], $r.Y + [int]$xy[1])
-                Start-Sleep -Milliseconds 60
+                Move-Pointer ($r.X + [int]$xy[0]) ($r.Y + [int]$xy[1])
+                Start-Sleep -Milliseconds 120
                 [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
                 [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
                 Start-Sleep -Milliseconds 150
@@ -220,8 +232,8 @@ try {
                 Raise-Window
                 $xy = $rest -split '\s+'
                 $r = Get-WindowRect
-                [void][Win]::SetCursorPos($r.X + [int]$xy[0], $r.Y + [int]$xy[1])
-                Start-Sleep -Milliseconds 60
+                Move-Pointer ($r.X + [int]$xy[0]) ($r.Y + [int]$xy[1])
+                Start-Sleep -Milliseconds 120
                 [Win]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)   # RIGHTDOWN
                 [Win]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)   # RIGHTUP
                 Start-Sleep -Milliseconds 150
