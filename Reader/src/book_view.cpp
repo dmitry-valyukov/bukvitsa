@@ -745,7 +745,7 @@ bool BookView::resizeSurface() {
     // же число, которым XAML умножает DIP в пиксели, и оно обязано совпадать.
     // XamlRoot появляется, когда элемент попал в живое дерево: до Loaded его
     // нет, и спрашивать масштаб не у кого.
-    Nullable<XamlRoot> const xamlRoot = root_.value().xamlRoot();
+    core::nullable<XamlRoot> const xamlRoot = root_.value().xamlRoot();
     float scale = xamlRoot ? static_cast<float>(xamlRoot->rasterizationScale()) : 1.0f;
     if (scale <= 0.0f) scale = 1.0f;
 

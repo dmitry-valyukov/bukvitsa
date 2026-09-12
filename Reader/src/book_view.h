@@ -29,7 +29,7 @@
 #include "theme.h"
 
 #include "DrawingSurface.h"
-#include "Nullable.h"
+#include "Object.h"
 #include "pch.h"
 
 // Последним: он ведёт к модели книги, а она импортирует wxl.text, после чего
@@ -417,7 +417,7 @@ private:
 
     wxl::CompositionWindow* window_ = nullptr;   ///< сцена и очередь окна
     wxl::Compositor compositor_;                 ///< композитор окна: на нём визуалы страницы
-    wxl::Nullable<wxl::Grid> root_ = nullptr;    ///< прозрачный остров: ввод и оверлеи поверх сцены
+    wxl::core::nullable<wxl::Grid> root_ = nullptr;    ///< прозрачный остров: ввод и оверлеи поверх сцены
     bool active_ = false;                        ///< полоса — текущий экран, её сцена показана
 
     /// Осевший разворот — поверхность, которую в покое носят обе страницы
@@ -429,7 +429,7 @@ private:
     /// Севший лист его не перерисовывает, а меняется с ним поверхностями
     /// (landFlip); когда сел последний, settled_ — нынешний разворот, и флаг
     /// settledStale_ снимается.
-    wxl::Nullable<wxl::ContainerVisual> sheets_ = nullptr;   ///< над страницами: листы переворотов
+    wxl::core::nullable<wxl::ContainerVisual> sheets_ = nullptr;   ///< над страницами: листы переворотов
     std::optional<wxl::DrawingSurface> settled_;             ///< DrawingSurface без пустого ctor — в optional
     bool settledStale_ = false;   ///< книжный лист в полёте: нынешний разворот несёт он, а не settled_
 
@@ -443,7 +443,7 @@ private:
     /// страницы кроют его целиком, красить под ними нечего. Размер и шов берут
     /// у сцены выражениями композитора (buildTree), потому идут за окном
     /// синхронно с WM_SIZE — applySize их не трогает.
-    wxl::Nullable<wxl::SpriteVisual> pages_[2] = {nullptr, nullptr};
+    wxl::core::nullable<wxl::SpriteVisual> pages_[2] = {nullptr, nullptr};
 
     /// Пул листов переворотов (тип Flip объявлен в начале private). Растёт по
     /// требованию до kMaxFlips и переиспользуется; при быстром листании их в

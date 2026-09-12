@@ -19,7 +19,7 @@
 
 #include "library.h"
 
-#include "Nullable.h"
+#include "Object.h"
 #include "pch.h"
 
 namespace bukvitsa::reader {
@@ -55,10 +55,10 @@ public:
 private:
     wxl::Button shelfItem(const BookEntry& entry);
 
-    wxl::Nullable<wxl::Grid> root_ = nullptr;
-    wxl::Nullable<wxl::StackPanel> shelf_ = nullptr;
-    wxl::Nullable<wxl::CheckBox> continueBox_ = nullptr;
-    wxl::Nullable<wxl::TextBlock> emptyNote_ = nullptr;
+    wxl::core::nullable<wxl::Grid> root_ = nullptr;
+    wxl::core::nullable<wxl::StackPanel> shelf_ = nullptr;
+    wxl::core::nullable<wxl::CheckBox> continueBox_ = nullptr;
+    wxl::core::nullable<wxl::TextBlock> emptyNote_ = nullptr;
 
     /// Строка прогресса каждой карточки, по guid книги. Живёт ровно от одного
     /// показа полки до другого -- как и сами карточки.

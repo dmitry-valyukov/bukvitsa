@@ -20,7 +20,7 @@
 #include "theme.h"
 
 #include "DrawingSurface.h"
-#include "Nullable.h"
+#include "Object.h"
 #include "pch.h"
 
 // Последним: он ведёт к модели книги, а она импортирует wxl.text, после чего
@@ -53,10 +53,10 @@ private:
     void draw(const Theme& theme, float width, float height, float scale);
 
     wxl::Compositor compositor_;
-    wxl::Nullable<wxl::Border> root_ = nullptr;
-    wxl::Nullable<wxl::ScrollViewer> scroll_ = nullptr;
-    wxl::Nullable<wxl::Grid> paper_ = nullptr;   ///< подложка ростом с текст сноски
-    wxl::Nullable<wxl::SpriteVisual> sprite_ = nullptr;
+    wxl::core::nullable<wxl::Border> root_ = nullptr;
+    wxl::core::nullable<wxl::ScrollViewer> scroll_ = nullptr;
+    wxl::core::nullable<wxl::Grid> paper_ = nullptr;   ///< подложка ростом с текст сноски
+    wxl::core::nullable<wxl::SpriteVisual> sprite_ = nullptr;
     std::optional<wxl::DrawingSurface> surface_;
 
     std::vector<typography::Line> lines_;

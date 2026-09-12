@@ -23,7 +23,7 @@
 #include "skins.h"
 
 #include "DrawingSurface.h"
-#include "Nullable.h"
+#include "Object.h"
 #include "pch.h"
 
 namespace bukvitsa::reader {
@@ -96,15 +96,15 @@ private:
     void finishNaming(bool save);
 
     wxl::Compositor compositor_;
-    wxl::Nullable<wxl::Grid> root_ = nullptr;
-    wxl::Nullable<wxl::Grid> surfaceHost_ = nullptr;   ///< несёт визуал сетки
-    wxl::Nullable<wxl::SpriteVisual> visual_ = nullptr;
+    wxl::core::nullable<wxl::Grid> root_ = nullptr;
+    wxl::core::nullable<wxl::Grid> surfaceHost_ = nullptr;   ///< несёт визуал сетки
+    wxl::core::nullable<wxl::SpriteVisual> visual_ = nullptr;
     std::vector<wxl::DrawingSurface> surface_;   ///< ноль или одна — как листы полосы
 
     /// Диалог имени. Свой оверлей, а не системное окно: он живёт поверх той
     /// же страницы, и «Отмена» возвращает ровно туда, где читатель был.
-    wxl::Nullable<wxl::Border> namePanel_ = nullptr;
-    wxl::Nullable<wxl::TextBox> nameBox_ = nullptr;
+    wxl::core::nullable<wxl::Border> namePanel_ = nullptr;
+    wxl::core::nullable<wxl::TextBox> nameBox_ = nullptr;
 
     std::filesystem::path image_;   ///< снимок обложки: выбранный файл или копия из реестра
     Skin skin_ = defaultSkin();     ///< редактируемые кривые (и имя с копией у правки)

@@ -320,7 +320,7 @@ bool SkinWizard::resizeSurface() {
     const auto width = static_cast<float>(root_.value().actualWidth());
     const auto height = static_cast<float>(root_.value().actualHeight());
 
-    Nullable<XamlRoot> const xamlRoot = root_.value().xamlRoot();
+    core::nullable<XamlRoot> const xamlRoot = root_.value().xamlRoot();
     float scale = xamlRoot ? static_cast<float>(xamlRoot->rasterizationScale()) : 1.0f;
     if (scale <= 0.0f) scale = 1.0f;
 

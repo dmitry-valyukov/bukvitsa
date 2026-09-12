@@ -22,7 +22,7 @@
 
 #include "library.h"
 
-#include "Nullable.h"
+#include "Object.h"
 #include "pch.h"
 
 // Последним: он ведёт к модели книги, а она импортирует wxl.text, после чего
@@ -102,25 +102,25 @@ private:
     BookView& view_;
     BookState* state_ = nullptr;
 
-    wxl::Nullable<wxl::Border> root_ = nullptr;
-    wxl::Nullable<wxl::Visual> visual_ = nullptr;   ///< для выезда и ухода
+    wxl::core::nullable<wxl::Border> root_ = nullptr;
+    wxl::core::nullable<wxl::Visual> visual_ = nullptr;   ///< для выезда и ухода
 
-    wxl::Nullable<wxl::Grid> pages_ = nullptr;
+    wxl::core::nullable<wxl::Grid> pages_ = nullptr;
     std::vector<wxl::UIElement> tabPages_;
     std::vector<wxl::Button> tabButtons_;
     std::vector<wxl::Button> themeButtons_;
-    wxl::Nullable<wxl::StackPanel> themesPanel_ = nullptr;   ///< пересобирается
+    wxl::core::nullable<wxl::StackPanel> themesPanel_ = nullptr;   ///< пересобирается
 
-    wxl::Nullable<wxl::StackPanel> contentsList_ = nullptr;
-    wxl::Nullable<wxl::StackPanel> searchList_ = nullptr;
-    wxl::Nullable<wxl::StackPanel> bookmarkList_ = nullptr;
-    wxl::Nullable<wxl::TextBox> searchBox_ = nullptr;
-    wxl::Nullable<wxl::TextBlock> searchNote_ = nullptr;
-    wxl::Nullable<wxl::TextBlock> bookmarkNote_ = nullptr;
+    wxl::core::nullable<wxl::StackPanel> contentsList_ = nullptr;
+    wxl::core::nullable<wxl::StackPanel> searchList_ = nullptr;
+    wxl::core::nullable<wxl::StackPanel> bookmarkList_ = nullptr;
+    wxl::core::nullable<wxl::TextBox> searchBox_ = nullptr;
+    wxl::core::nullable<wxl::TextBlock> searchNote_ = nullptr;
+    wxl::core::nullable<wxl::TextBlock> bookmarkNote_ = nullptr;
 
-    wxl::Nullable<wxl::Slider> fontSize_ = nullptr;
-    wxl::Nullable<wxl::Slider> lineHeight_ = nullptr;
-    wxl::Nullable<wxl::Slider> margin_ = nullptr;
+    wxl::core::nullable<wxl::Slider> fontSize_ = nullptr;
+    wxl::core::nullable<wxl::Slider> lineHeight_ = nullptr;
+    wxl::core::nullable<wxl::Slider> margin_ = nullptr;
 
     Tab tab_ = Tab::Contents;
     bool open_ = false;
