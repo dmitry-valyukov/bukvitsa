@@ -15,7 +15,7 @@ namespace bukvitsa::io {
 /// передаёт элементы по указателю, вплетая их в свой список. Отсюда и узел в
 /// куче на каждое возобновление; если когда-нибудь станет дорого, в wxl есть
 /// пулы.
-struct continuation : wxl::core::intrusive_list_node<continuation> {
+struct continuation : wxl::core::intrusive_slist_node<continuation> {
     explicit continuation(std::function<void()> work) noexcept : work(std::move(work)) {}
 
     std::function<void()> work;
